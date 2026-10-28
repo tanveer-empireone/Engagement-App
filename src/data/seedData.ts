@@ -1,16 +1,8 @@
 import { Person, UploadItem, DirectionMessage, ShiftReport, SyncHealth, SyncLedgerEntry, SyncLogEntry } from '../types';
 
-export const INITIAL_PEOPLE: Person[] = [
-  {
-    Email: 'tanveer@empireonecx.com',
-    Name: 'Tanveer (Admin)',
-    Role: 'Admin',
-    Site: 'Cebu City',
-    Shift: 'Peak',
-    Active: true,
-    Avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=150&q=80'
-  }
-];
+// Nobody is signed in until Google auth succeeds. The admin role is granted
+// only to tanveer@empireonecx.com at sign-in, not by seeding a session.
+export const INITIAL_PEOPLE: Person[] = [];
 
 // Demo items removed: Clean operational slate
 export const INITIAL_UPLOADS: UploadItem[] = [];

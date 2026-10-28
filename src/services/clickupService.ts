@@ -124,13 +124,16 @@ async function clickUpGet(path: string, token: string): Promise<any> {
 /**
  * Test ClickUp token against the target Engagement space (HTTP GET only)
  */
-export async function testClickUpConnection(token: string): Promise<{ success: boolean; message: string; space?: any }> {
+export async function testClickUpConnection(
+  token: string,
+  spaceId: string = CLICKUP_ENGAGEMENT_SPACE_ID
+): Promise<{ success: boolean; message: string; space?: any }> {
   if (!token || !token.trim()) {
     return { success: false, message: 'Please enter your ClickUp Personal API Token (pk_...)' };
   }
 
   try {
-    const data = await clickUpGet(`/space/${CLICKUP_ENGAGEMENT_SPACE_ID}`, token);
+    const data = await clickUpGet(`/space/${spaceId}`, token);
     return {
       success: true,
       message: `Successfully connected to ClickUp Space "${data.name || 'Engagement'}"!`,
@@ -149,16 +152,19 @@ export async function testClickUpConnection(token: string): Promise<{ success: b
  * Fetch all folders, lists, and tasks in the Engagement Space.
  * Guaranteed READ-ONLY.
  */
-export async function fetchAllLiveClickUpData(token: string): Promise<LiveClickUpResult> {
+export async function fetchAllLiveClickUpData(
+  token: string,
+  spaceId: string = CLICKUP_ENGAGEMENT_SPACE_ID
+): Promise<LiveClickUpResult> {
   if (!token || !token.trim()) {
     throw new Error('ClickUp API token is required to fetch live tasks');
   }
 
   // 1. Fetch space details
-  const spaceData = await clickUpGet(`/space/${CLICKUP_ENGAGEMENT_SPACE_ID}`, token).catch(() => null);
+  const spaceData = await clickUpGet(`/space/${spaceId}`, token).catch(() => null);
 
   // 2. Fetch folders inside space
-  const foldersRes = await clickUpGet(`/space/${CLICKUP_ENGAGEMENT_SPACE_ID}/folder`, token).catch(() => ({ folders: [] }));
+  const foldersRes = await clickUpGet(`/space/${spaceId}/folder`, token).catch(() => ({ folders: [] }));
   const folders: ClickUpFolder[] = (foldersRes.folders || []).map((f: any) => ({
     id: f.id,
     name: f.name,
@@ -172,7 +178,7 @@ export async function fetchAllLiveClickUpData(token: string): Promise<LiveClickU
   }));
 
   // 3. Fetch folderless lists in space
-  const listsRes = await clickUpGet(`/space/${CLICKUP_ENGAGEMENT_SPACE_ID}/list`, token).catch(() => ({ lists: [] }));
+  const listsRes = await clickUpGet(`/space/${spaceId}/list`, token).catch(() => ({ lists: [] }));
   const folderlessLists: ClickUpListSummary[] = (listsRes.lists || []).map((l: any) => ({
     id: l.id,
     name: l.name,

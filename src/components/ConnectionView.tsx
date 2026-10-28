@@ -19,9 +19,6 @@ import {
 } from 'lucide-react';
 import { GoogleSignInButton } from './GoogleSignInButton';
 import { LiveDataInspectorModal } from './LiveDataInspectorModal';
-import { TARGET_SPREADSHEET_ID } from '../services/googleSheetsService';
-import { TARGET_DRIVE_ROOT_FOLDER_ID } from '../services/googleDriveService';
-import { CLICKUP_ENGAGEMENT_SPACE_ID, CLICKUP_TEAM_ID } from '../services/clickupService';
 
 export const ConnectionView: React.FC = () => {
   const {
@@ -51,7 +48,9 @@ export const ConnectionView: React.FC = () => {
     directions,
     shiftReports,
     people,
-    sites
+    sites,
+    appConfig,
+    googleToken
   } = useApp();
 
   const [inputClickUpToken, setInputClickUpToken] = useState(clickUpToken);
@@ -165,14 +164,14 @@ export const ConnectionView: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500 font-mono">
-                ID: {TARGET_SPREADSHEET_ID}
+                ID: {appConfig.sheetId}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <a
-              href={`https://docs.google.com/spreadsheets/d/${TARGET_SPREADSHEET_ID}/edit`}
+              href={`https://docs.google.com/spreadsheets/d/${appConfig.sheetId}/edit`}
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-1.5 rounded-xl font-semibold text-slate-700 bg-white/80 hover:bg-white border border-slate-200/60 text-xs flex items-center gap-1 transition"
@@ -196,7 +195,7 @@ export const ConnectionView: React.FC = () => {
 
         {/* Google Auth Status / Button */}
         <div className="p-4 rounded-2xl bg-white/70 border border-slate-100 space-y-3">
-          {isGoogleConnected && googleUser ? (
+          {isGoogleConnected && googleUser && googleToken ? (
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div className="flex items-center gap-2.5">
                 {googleUser.photoURL ? (
@@ -231,12 +230,12 @@ export const ConnectionView: React.FC = () => {
           ) : (
             <div className="space-y-2">
               <p className="text-xs text-slate-600">
-                Sign in with your Google Workspace account to fetch live rows from your sheet tabs (Uploads, Feedback, Reports, People, Sites):
+                You are signed in{googleUser?.email ? ` as ${googleUser.email}` : ''}. Sheets and Drive need a fresh access token before the next read. Refreshing access keeps this Google account.
               </p>
               <GoogleSignInButton
                 onClick={signInWithGoogle}
                 isLoading={isSigningInGoogle}
-                text="Sign in with Google to Fetch Live Data"
+                text="Refresh Google access"
               />
             </div>
           )}
@@ -291,14 +290,14 @@ export const ConnectionView: React.FC = () => {
               </div>
               <p className="text-xs text-slate-500">
                 Root: <span className="font-semibold text-slate-700">E1CX Experience</span> ·{' '}
-                <code className="font-mono text-[11px]">{TARGET_DRIVE_ROOT_FOLDER_ID}</code>
+                <code className="font-mono text-[11px]">{appConfig.driveRootId}</code>
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <a
-              href={`https://drive.google.com/drive/folders/${TARGET_DRIVE_ROOT_FOLDER_ID}`}
+              href={`https://drive.google.com/drive/folders/${appConfig.driveRootId}`}
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-1.5 rounded-xl font-semibold text-slate-700 bg-white/80 hover:bg-white border border-slate-200/60 text-xs flex items-center gap-1 transition"
@@ -370,14 +369,14 @@ export const ConnectionView: React.FC = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-500">
-                Engagement Space · <code className="font-mono text-[11px]">{CLICKUP_ENGAGEMENT_SPACE_ID}</code> · Team: {CLICKUP_TEAM_ID}
+                Engagement Space · <code className="font-mono text-[11px]">{appConfig.clickUpSpaceId}</code> · Team: {appConfig.clickUpTeamId}
               </p>
             </div>
           </div>
 
           <div className="flex items-center gap-2">
             <a
-              href={`https://app.clickup.com/${CLICKUP_TEAM_ID}/v/s/${CLICKUP_ENGAGEMENT_SPACE_ID}`}
+              href={`https://app.clickup.com/${appConfig.clickUpTeamId}/v/s/${appConfig.clickUpSpaceId}`}
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-1.5 rounded-xl font-semibold text-slate-700 bg-white/80 hover:bg-white border border-slate-200/60 text-xs flex items-center gap-1 transition"

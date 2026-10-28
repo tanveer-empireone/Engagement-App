@@ -42,8 +42,11 @@ export interface LiveSheetDataResult {
 /**
  * Fetch spreadsheet metadata to discover actual tab names.
  */
-export async function fetchSpreadsheetMetadata(accessToken: string): Promise<{ title: string; tabs: SheetTabInfo[] }> {
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${TARGET_SPREADSHEET_ID}?fields=properties.title,sheets.properties`;
+export async function fetchSpreadsheetMetadata(
+  accessToken: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<{ title: string; tabs: SheetTabInfo[] }> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties`;
   const res = await fetch(url, {
     method: 'GET',
     headers: {
@@ -75,10 +78,11 @@ export async function fetchSpreadsheetMetadata(accessToken: string): Promise<{ t
 export async function fetchTabValues(
   accessToken: string,
   tabName: string,
-  range: string = 'A1:Z500'
+  range: string = 'A1:Z500',
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
 ): Promise<any[][]> {
   const fullRange = `${tabName}!${range}`;
-  const url = `https://sheets.googleapis.com/v4/spreadsheets/${TARGET_SPREADSHEET_ID}/values/${encodeURIComponent(
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     fullRange
   )}?valueRenderOption=UNFORMATTED_VALUE`;
 
@@ -128,8 +132,11 @@ function rowsToObjects(rows: any[][]): Record<string, any>[] {
  * Fetch and parse all tabs from the real Google Sheet in parallel.
  * Guaranteed READ-ONLY.
  */
-export async function fetchAllLiveSheetData(accessToken: string): Promise<LiveSheetDataResult> {
-  const meta = await fetchSpreadsheetMetadata(accessToken);
+export async function fetchAllLiveSheetData(
+  accessToken: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<LiveSheetDataResult> {
+  const meta = await fetchSpreadsheetMetadata(accessToken, spreadsheetId);
   const tabTitles = meta.tabs.map((t) => t.title);
 
   const tabNamesToFetch = [
@@ -148,7 +155,7 @@ export async function fetchAllLiveSheetData(accessToken: string): Promise<LiveSh
     tabNamesToFetch.map(async (name) => {
       const actualName = tabTitles.find((t) => t.toLowerCase() === name.toLowerCase()) || name;
       try {
-        const rows = await fetchTabValues(accessToken, actualName, 'A1:Z500');
+        const rows = await fetchTabValues(accessToken, actualName, 'A1:Z500', spreadsheetId);
         fetchedData[name.toLowerCase()] = rows;
       } catch (err) {
         console.error(`Failed to fetch tab ${name}:`, err);

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { useSignedInApp } from '../context/AppContext';
 import {
   Camera,
   CheckCircle2,
@@ -26,7 +26,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     uploads,
     shiftReports,
     getTopPickRoom
-  } = useApp();
+  } = useSignedInApp();
 
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
   const [replyText, setReplyText] = useState<string>('');

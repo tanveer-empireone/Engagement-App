@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { useSignedInApp } from '../context/AppContext';
 import { UploadItem, ReviewStatus } from '../types';
 import {
   CheckCircle2,
@@ -13,7 +13,7 @@ import {
 } from 'lucide-react';
 
 export const ReviewQueueView: React.FC = () => {
-  const { uploads, reviewUpload, currentUser, canReview } = useApp();
+  const { uploads, reviewUpload, currentUser, canReview } = useSignedInApp();
 
   const [reshootModalItem, setReshootModalItem] = useState<UploadItem | null>(null);
   const [reshootNote, setReshootNote] = useState<string>('');
@@ -32,7 +32,11 @@ export const ReviewQueueView: React.FC = () => {
   const handleDecision = async (id: string, status: ReviewStatus, note?: string) => {
     await reviewUpload(id, status, note);
     setNotification(
-      `Marked ${id} as ${status}.${status === 'Reshoot' ? ' Follow-up task queued in ClickUp.' : ''}`
+      `Marked ${id} as ${status}.${
+        status === 'Reshoot' || status === 'Top pick'
+          ? ' Saved in this browser. ClickUp was not updated.'
+          : ''
+      }`
     );
     setTimeout(() => setNotification(null), 3500);
   };
@@ -58,7 +62,7 @@ export const ReviewQueueView: React.FC = () => {
         <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
         <h3 className="font-bold text-slate-900 text-sm">Reviewer Access Required</h3>
         <p className="text-slate-400 mt-1">
-          Review is available to Engagement Leads, Site Managers, and Admins. Switch persona via the top right menu.
+          Review is available to Engagement Leads, Site Managers, Creative Designers, and the admin. Your Google account decides the role.
         </p>
       </div>
     );

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { User } from 'firebase/auth';
 import {
   Person,
@@ -10,7 +10,10 @@ import {
   SyncHealth,
   SyncLedgerEntry,
   SyncLogEntry,
-  ReviewStatus
+  ReviewStatus,
+  Role,
+  AppIntegrationConfig,
+  ConnectorReport
 } from '../types';
 import {
   INITIAL_PEOPLE,
@@ -32,6 +35,14 @@ import {
   reverseGeocodeApprox
 } from '../utils/idGenerator';
 import {
+  canOpenAdminPanel,
+  normalizeEmail,
+  resolveSessionPerson,
+  samePersonRecord,
+  sanitizeDirectory,
+  sanitizePerson
+} from '../utils/access';
+import {
   initAuth,
   googleSignIn,
   logout as googleLogout,
@@ -39,12 +50,10 @@ import {
 } from '../services/googleAuth';
 import {
   fetchAllLiveSheetData,
-  LiveSheetDataResult,
   TARGET_SPREADSHEET_ID
 } from '../services/googleSheetsService';
 import {
   fetchAllLiveDriveData,
-  LiveDriveResult,
   TARGET_DRIVE_ROOT_FOLDER_ID
 } from '../services/googleDriveService';
 import {
@@ -52,14 +61,26 @@ import {
   testClickUpConnection,
   getStoredClickUpToken,
   saveStoredClickUpToken,
-  LiveClickUpResult,
   CLICKUP_ENGAGEMENT_SPACE_ID,
   CLICKUP_TEAM_ID
 } from '../services/clickupService';
+import { getAppsScriptConfig, saveAppsScriptConfig } from '../services/appsScriptService';
+
+export interface DirectoryUserInput {
+  email: string;
+  name: string;
+  role: Role;
+  site: string;
+  shift: string;
+}
+
+export interface ActionResult {
+  ok: boolean;
+  message: string;
+}
 
 interface AppContextType {
-  currentUser: Person;
-  setCurrentUser: (p: Person) => void;
+  currentUser: Person | null;
   people: Person[];
   sites: Site[];
   topics: Topic[];
@@ -70,37 +91,52 @@ interface AppContextType {
   syncLedger: SyncLedgerEntry[];
   syncLogs: SyncLogEntry[];
 
-  // Live Integration State
+  authReady: boolean;
   googleUser: User | null;
   googleToken: string | null;
   isGoogleConnected: boolean;
   isSigningInGoogle: boolean;
   isFetchingLiveSheets: boolean;
   isFetchingLiveDrive: boolean;
-  liveSheetsMeta: LiveSheetDataResult | null;
-  liveDriveData: LiveDriveResult | null;
+  liveSheetsMeta: Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null;
+  liveDriveData: Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null;
 
-  // ClickUp Integration State
   clickUpToken: string;
   setClickUpToken: (token: string) => void;
   isClickUpConnected: boolean;
   isFetchingClickUp: boolean;
-  liveClickUpData: LiveClickUpResult | null;
+  liveClickUpData: Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null;
   liveError: string | null;
+  appConfig: AppIntegrationConfig;
+  lastSyncReport: ConnectorReport[] | null;
 
-  // Capabilities
   canReview: boolean;
   canPublish: boolean;
   isWide: boolean;
+  isAdmin: boolean;
 
-  // Actions
   signInWithGoogle: () => Promise<void>;
   signOutGoogle: () => Promise<void>;
-  fetchLiveSheets: () => Promise<void>;
-  fetchLiveDrive: () => Promise<void>;
-  fetchLiveClickUp: () => Promise<void>;
+  fetchLiveSheets: () => Promise<ConnectorReport>;
+  fetchLiveDrive: () => Promise<ConnectorReport>;
+  fetchLiveClickUp: () => Promise<ConnectorReport>;
   fetchLiveAllData: () => Promise<void>;
   testClickUpToken: (token: string) => Promise<{ success: boolean; message: string }>;
+  updateAppConfig: (patch: Partial<AppIntegrationConfig>) => ActionResult;
+
+  addDirectoryUser: (input: DirectoryUserInput) => ActionResult;
+  updateDirectoryUser: (email: string, patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => ActionResult;
+  removeDirectoryUser: (email: string) => ActionResult;
+
+  updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => ActionResult;
+  deleteUpload: (id: string) => ActionResult;
+  deleteAllUploads: () => ActionResult;
+  updateDirection: (feedbackId: string, patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged'>>) => ActionResult;
+  deleteDirection: (feedbackId: string) => ActionResult;
+  deleteAllDirections: () => ActionResult;
+  updateShiftReport: (reportId: string, patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>) => ActionResult;
+  deleteShiftReport: (reportId: string) => ActionResult;
+  deleteAllShiftReports: () => ActionResult;
 
   addBatchUploads: (filesData: Array<{
     site: string;
@@ -128,7 +164,7 @@ interface AppContextType {
   publishDirection: (feedbackId: string) => void;
   addShiftReport: (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => void;
   signOffReport: (reportId: string) => void;
-  triggerManualSync: () => Promise<void>;
+  triggerManualSync: () => Promise<ConnectorReport[]>;
   toggleSyncPause: () => void;
   getTopPickRoom: (site: string, shift: string, mode: string, eventName?: string, dateStr?: string) => { used: number; limit: number; left: number };
   resetToSampleData: () => void;
@@ -139,163 +175,232 @@ const AppContext = createContext<AppContextType | undefined>(undefined);
 const STORAGE_KEY_UPLOADS = 'e1_engagement_uploads_v4';
 const STORAGE_KEY_DIRECTIONS = 'e1_engagement_directions_v4';
 const STORAGE_KEY_REPORTS = 'e1_engagement_reports_v4';
-const STORAGE_KEY_USER = 'e1_engagement_active_user_v5';
+const STORAGE_KEY_PEOPLE = 'e1_engagement_people_v1';
+const STORAGE_KEY_CONFIG = 'e1_app_config_v1';
+const LEGACY_USER_KEY = 'e1_engagement_active_user_v5';
+
+function loadPeople(): Person[] {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_PEOPLE);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) return sanitizeDirectory(parsed);
+    }
+  } catch {
+    // Ignore unreadable roster data and start from the empty directory.
+  }
+  return sanitizeDirectory(INITIAL_PEOPLE);
+}
+
+function loadAppConfig(): AppIntegrationConfig {
+  const script = getAppsScriptConfig();
+  const base: AppIntegrationConfig = {
+    sheetId: script.sheetId || TARGET_SPREADSHEET_ID,
+    driveRootId: script.driveRootId || TARGET_DRIVE_ROOT_FOLDER_ID,
+    clickUpTeamId: script.clickUpTeamId || CLICKUP_TEAM_ID,
+    clickUpSpaceId: script.clickUpSpaceId || CLICKUP_ENGAGEMENT_SPACE_ID,
+    appsScriptUrl: script.webAppUrl || ''
+  };
+  try {
+    const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
+    if (saved) {
+      const parsed = JSON.parse(saved) as Partial<AppIntegrationConfig>;
+      return {
+        sheetId: parsed.sheetId || base.sheetId,
+        driveRootId: parsed.driveRootId || base.driveRootId,
+        clickUpTeamId: parsed.clickUpTeamId || base.clickUpTeamId,
+        clickUpSpaceId: parsed.clickUpSpaceId || base.clickUpSpaceId,
+        appsScriptUrl: parsed.appsScriptUrl ?? base.appsScriptUrl
+      };
+    }
+  } catch {
+    // Keep the built-in ids when saved config cannot be read.
+  }
+  return base;
+}
+
+function readJson<T>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    if (saved) return JSON.parse(saved) as T;
+  } catch {
+    // Ignore corrupt local records.
+  }
+  return fallback;
+}
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [people, setPeople] = useState<Person[]>(INITIAL_PEOPLE);
+  const [people, setPeople] = useState<Person[]>(loadPeople);
   const [sites, setSites] = useState<Site[]>(SITES_METADATA);
   const [topics, setTopics] = useState<Topic[]>(TOPICS_LIST);
-
-  const [currentUser, setCurrentUser] = useState<Person>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_USER);
-      if (saved) {
-        const found = INITIAL_PEOPLE.find((p) => p.Email === saved);
-        if (found) return found;
-      }
-    } catch {}
-    return INITIAL_PEOPLE[0]; // Tanveer (Admin)
-  });
-
-  const [uploads, setUploads] = useState<UploadItem[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_UPLOADS);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return INITIAL_UPLOADS;
-  });
-
-  const [directions, setDirections] = useState<DirectionMessage[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_DIRECTIONS);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return INITIAL_DIRECTIONS;
-  });
-
-  const [shiftReports, setShiftReports] = useState<ShiftReport[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY_REPORTS);
-      if (saved) return JSON.parse(saved);
-    } catch {}
-    return INITIAL_REPORTS;
-  });
-
+  const [uploads, setUploads] = useState<UploadItem[]>(() => readJson(STORAGE_KEY_UPLOADS, INITIAL_UPLOADS));
+  const [directions, setDirections] = useState<DirectionMessage[]>(() => readJson(STORAGE_KEY_DIRECTIONS, INITIAL_DIRECTIONS));
+  const [shiftReports, setShiftReports] = useState<ShiftReport[]>(() => readJson(STORAGE_KEY_REPORTS, INITIAL_REPORTS));
   const [syncHealth, setSyncHealth] = useState<SyncHealth>(INITIAL_SYNC_HEALTH);
   const [syncLedger, setSyncLedger] = useState<SyncLedgerEntry[]>(INITIAL_LEDGER);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(INITIAL_LOGS);
+  const [appConfig, setAppConfig] = useState<AppIntegrationConfig>(loadAppConfig);
 
-  // Live Google Workspace state
+  const [authReady, setAuthReady] = useState(false);
   const [googleUser, setGoogleUser] = useState<User | null>(null);
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
   const [isFetchingLiveSheets, setIsFetchingLiveSheets] = useState(false);
   const [isFetchingLiveDrive, setIsFetchingLiveDrive] = useState(false);
-  const [liveSheetsMeta, setLiveSheetsMeta] = useState<LiveSheetDataResult | null>(null);
-  const [liveDriveData, setLiveDriveData] = useState<LiveDriveResult | null>(null);
+  const [liveSheetsMeta, setLiveSheetsMeta] = useState<Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null>(null);
+  const [liveDriveData, setLiveDriveData] = useState<Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null>(null);
 
-  // ClickUp state
   const [clickUpToken, setClickUpTokenState] = useState<string>(getStoredClickUpToken);
   const [isClickUpConnected, setIsClickUpConnected] = useState(false);
   const [isFetchingClickUp, setIsFetchingClickUp] = useState(false);
-  const [liveClickUpData, setLiveClickUpData] = useState<LiveClickUpResult | null>(null);
+  const [liveClickUpData, setLiveClickUpData] = useState<Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
+  const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
+
+  const googleEmail = googleUser?.email || '';
+  const googleName = googleUser?.displayName || '';
+  const googlePhoto = googleUser?.photoURL || '';
+
+  const currentUser = useMemo(() => {
+    if (!googleEmail) return null;
+    return resolveSessionPerson(
+      { email: googleEmail, displayName: googleName, photoURL: googlePhoto },
+      people
+    );
+  }, [googleEmail, googleName, googlePhoto, people]);
+
+  const isAdmin = canOpenAdminPanel(currentUser);
+  const isWide = currentUser?.Role === 'Admin' || currentUser?.Role === 'Engagement Lead';
+  const canReview = Boolean(
+    isWide || currentUser?.Role === 'Site Manager' || currentUser?.Role === 'Creative Designer'
+  );
+  const canPublish = isWide;
 
   const setClickUpToken = (tok: string) => {
     setClickUpTokenState(tok);
     saveStoredClickUpToken(tok);
   };
 
-  // Listen to Google Auth state
+  const denyAdmin = (): ActionResult => ({
+    ok: false,
+    message: 'Only tanveer@empireonecx.com can change admin settings.'
+  });
+
   useEffect(() => {
-    const unsubscribe = initAuth(
-      (user, token) => {
-        setGoogleUser(user);
-        if (token) {
-          setGoogleToken(token);
-        }
-      },
-      () => {
-        setGoogleUser(null);
-        setGoogleToken(null);
+    try {
+      localStorage.removeItem(LEGACY_USER_KEY);
+    } catch {
+      // The legacy key is only a leftover session hint.
+    }
+  }, []);
+
+  useEffect(() => {
+    let settled = false;
+    const unsubscribe = initAuth((user, token) => {
+      settled = true;
+      setGoogleUser(user);
+      setGoogleToken(token);
+      setAuthReady(true);
+    });
+    const timer = window.setTimeout(() => {
+      if (!settled) setAuthReady(true);
+    }, 4000);
+    return () => {
+      window.clearTimeout(timer);
+      unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!currentUser) return;
+    setPeople((prev) => {
+      const key = normalizeEmail(currentUser.Email);
+      const idx = prev.findIndex((p) => normalizeEmail(p.Email) === key);
+      if (idx === -1) {
+        if (currentUser.Active === false) return prev;
+        return sanitizeDirectory([currentUser, ...prev]);
       }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // When Google token becomes available, trigger automatic live read (strictly GET)
-  useEffect(() => {
-    if (googleToken) {
-      fetchLiveAllData();
-    }
-  }, [googleToken]);
-
-  // If ClickUp token is already stored, test and load space
-  useEffect(() => {
-    if (clickUpToken) {
-      testClickUpToken(clickUpToken).then((res) => {
-        if (res.success) {
-          fetchLiveClickUp();
-        }
+      const next = sanitizePerson({
+        ...prev[idx],
+        Name: prev[idx].Name || currentUser.Name,
+        Avatar: currentUser.Avatar || prev[idx].Avatar,
+        Site: prev[idx].Site || currentUser.Site,
+        Shift: prev[idx].Shift || currentUser.Shift
       });
-    }
-  }, []);
+      if (samePersonRecord(prev[idx], next)) return prev;
+      const copy = prev.slice();
+      copy[idx] = next;
+      return copy;
+    });
+  }, [currentUser]);
 
-  // Persist to localStorage
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_UPLOADS, JSON.stringify(uploads));
-    } catch {}
+    } catch {
+      // Storage may be full; the in-memory record still stands for this visit.
+    }
   }, [uploads]);
 
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_DIRECTIONS, JSON.stringify(directions));
-    } catch {}
+    } catch {
+      // Ignore storage failures.
+    }
   }, [directions]);
 
   useEffect(() => {
     try {
       localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(shiftReports));
-    } catch {}
+    } catch {
+      // Ignore storage failures.
+    }
   }, [shiftReports]);
 
   useEffect(() => {
     try {
-      localStorage.setItem(STORAGE_KEY_USER, currentUser.Email);
-    } catch {}
-  }, [currentUser]);
+      localStorage.setItem(STORAGE_KEY_PEOPLE, JSON.stringify(people));
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [people]);
 
-  // Google Sign-In action
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(appConfig));
+      saveAppsScriptConfig({
+        webAppUrl: appConfig.appsScriptUrl,
+        sheetId: appConfig.sheetId,
+        driveRootId: appConfig.driveRootId,
+        clickUpTeamId: appConfig.clickUpTeamId,
+        clickUpSpaceId: appConfig.clickUpSpaceId,
+        isConnected: false
+      });
+    } catch {
+      // Ignore storage failures.
+    }
+  }, [appConfig]);
+
   const signInWithGoogle = async () => {
     setIsSigningInGoogle(true);
     setLiveError(null);
     try {
       const result = await googleSignIn();
-      if (result) {
-        setGoogleUser(result.user);
-        setGoogleToken(result.accessToken);
-
-        // Map signed-in user into app active user if matched by email
-        const matched = people.find((p) => p.Email.toLowerCase() === (result.user.email || '').toLowerCase());
-        if (matched) {
-          setCurrentUser(matched);
-        } else if (result.user.email) {
-          const newUser: Person = {
-            Email: result.user.email,
-            Name: result.user.displayName || result.user.email.split('@')[0],
-            Role: 'Officer',
-            Site: sites[0]?.SiteName || 'Bacolod HQ',
-            Active: true,
-            Avatar: result.user.photoURL || undefined
-          };
-          setPeople((prev) => [newUser, ...prev]);
-          setCurrentUser(newUser);
-        }
-      }
+      setGoogleUser(result.user);
+      setGoogleToken(result.accessToken);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      setLiveError(`Google sign-in error: ${msg}`);
+      const code = typeof err === 'object' && err && 'code' in err ? String((err as { code?: string }).code) : '';
+      if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+        setLiveError('Google sign-in was cancelled. The app stays closed until Google sign-in finishes.');
+      } else if (code === 'auth/popup-blocked') {
+        setLiveError('The browser blocked the Google popup. Allow popups for this site, then try again.');
+      } else if (code === 'auth/unauthorized-domain') {
+        setLiveError('This site is not allowed to use Google sign-in yet. Add it under Firebase Authentication authorized domains.');
+      } else {
+        const msg = err instanceof Error ? err.message : String(err);
+        setLiveError(`Google sign-in error: ${msg}`);
+      }
       console.error('Sign-in failed:', err);
     } finally {
       setIsSigningInGoogle(false);
@@ -308,93 +413,113 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setGoogleToken(null);
     setLiveSheetsMeta(null);
     setLiveDriveData(null);
+    setLiveError(null);
   };
 
-  // Strictly READ-ONLY fetch for Google Sheets
-  const fetchLiveSheets = async () => {
+  const fetchLiveSheets = async (): Promise<ConnectorReport> => {
     const token = googleToken || (await getAccessToken());
-    if (!token) return;
+    if (!token) {
+      const detail = 'Sheets were not read. This Google session is still signed in, but the Sheets access token is missing. Refresh Google access and try again.';
+      setLiveError(detail);
+      return { name: 'Google Sheets', state: 'Skipped', detail };
+    }
+    if (!appConfig.sheetId.trim()) {
+      const detail = 'No spreadsheet id is configured.';
+      setLiveError(detail);
+      return { name: 'Google Sheets', state: 'Error', detail };
+    }
 
     setIsFetchingLiveSheets(true);
     setLiveError(null);
     try {
-      const result = await fetchAllLiveSheetData(token);
+      const result = await fetchAllLiveSheetData(token, appConfig.sheetId.trim());
       setLiveSheetsMeta(result);
 
-      // Populate app with live sheet data if available
-      if (result.uploads.length > 0) {
-        setUploads(result.uploads);
-      }
-      if (result.directions.length > 0) {
-        setDirections(result.directions);
-      }
-      if (result.shiftReports.length > 0) {
-        setShiftReports(result.shiftReports);
-      }
+      if (result.uploads.length > 0) setUploads(result.uploads);
+      if (result.directions.length > 0) setDirections(result.directions);
+      if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
       if (result.people.length > 0) {
-        setPeople(result.people);
+        setPeople((prev) => {
+          const incoming = sanitizeDirectory(result.people);
+          const incomingKeys = new Set(incoming.map((p) => normalizeEmail(p.Email)));
+          const keptInactive = prev.filter(
+            (p) => p.Active === false && !incomingKeys.has(normalizeEmail(p.Email))
+          );
+          return sanitizeDirectory([...incoming, ...keptInactive]);
+        });
       }
-      if (result.sites.length > 0) {
-        setSites(result.sites);
-      }
-      if (result.topics.length > 0) {
-        setTopics(result.topics);
-      }
-      if (result.syncLedger.length > 0) {
-        setSyncLedger(result.syncLedger);
-      }
-      if (result.syncLogs.length > 0) {
-        setSyncLogs(result.syncLogs);
-      }
+      if (result.sites.length > 0) setSites(result.sites);
+      if (result.topics.length > 0) setTopics(result.topics);
+      if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
+      if (result.syncLogs.length > 0) setSyncLogs(result.syncLogs);
 
-      setSyncHealth((prev) => ({
-        ...prev,
-        lastSync: new Date().toISOString(),
-        syncState: 'OK'
-      }));
+      const detail = `Read “${result.spreadsheetTitle}” (${result.availableTabs.length} tabs). Nothing was written back to the sheet.`;
+      return { name: 'Google Sheets', state: 'OK', detail };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      setLiveError(`Live Google Sheets fetch error: ${msg}`);
+      const detail = `Live Google Sheets fetch error: ${msg}`;
+      setLiveError(detail);
       console.error('Failed to fetch live Google Sheets data:', err);
+      return { name: 'Google Sheets', state: 'Error', detail };
     } finally {
       setIsFetchingLiveSheets(false);
     }
   };
 
-  // Strictly READ-ONLY fetch for Google Drive
-  const fetchLiveDrive = async () => {
+  const fetchLiveDrive = async (): Promise<ConnectorReport> => {
     const token = googleToken || (await getAccessToken());
-    if (!token) return;
+    if (!token) {
+      const detail = 'Drive was not read. This Google session is still signed in, but the Drive access token is missing. Refresh Google access and try again.';
+      return { name: 'Google Drive', state: 'Skipped', detail };
+    }
+    if (!appConfig.driveRootId.trim()) {
+      const detail = 'No Drive folder id is configured.';
+      return { name: 'Google Drive', state: 'Error', detail };
+    }
 
     setIsFetchingLiveDrive(true);
     try {
-      const result = await fetchAllLiveDriveData(token);
+      const result = await fetchAllLiveDriveData(token, appConfig.driveRootId.trim());
       setLiveDriveData(result);
+      return {
+        name: 'Google Drive',
+        state: 'OK',
+        detail: `Read ${result.items.length} items from “${result.rootFolderName}”. Nothing was uploaded or deleted in Drive.`
+      };
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       console.error('Failed to fetch live Google Drive data:', err);
+      return { name: 'Google Drive', state: 'Error', detail: `Drive read failed: ${msg}` };
     } finally {
       setIsFetchingLiveDrive(false);
     }
   };
 
-  // Test and fetch ClickUp
   const testClickUpToken = async (token: string): Promise<{ success: boolean; message: string }> => {
-    const res = await testClickUpConnection(token);
+    const res = await testClickUpConnection(token, appConfig.clickUpSpaceId.trim() || CLICKUP_ENGAGEMENT_SPACE_ID);
     setIsClickUpConnected(res.success);
     return res;
   };
 
-  // Strictly READ-ONLY fetch for ClickUp
-  const fetchLiveClickUp = async () => {
-    if (!clickUpToken) return;
+  const fetchLiveClickUp = async (): Promise<ConnectorReport> => {
+    if (!clickUpToken) {
+      setIsClickUpConnected(false);
+      return {
+        name: 'ClickUp',
+        state: 'Skipped',
+        detail: 'ClickUp was not read. No API token is saved. This app cannot create or update ClickUp tasks.'
+      };
+    }
+    if (!appConfig.clickUpSpaceId.trim()) {
+      return { name: 'ClickUp', state: 'Error', detail: 'No ClickUp space id is configured.' };
+    }
 
     setIsFetchingClickUp(true);
     try {
-      const result = await fetchAllLiveClickUpData(clickUpToken);
+      const result = await fetchAllLiveClickUpData(clickUpToken, appConfig.clickUpSpaceId.trim());
       setLiveClickUpData(result);
       setIsClickUpConnected(true);
 
-      // Merge ClickUp tasks into directions if not already present
       if (result.tasks.length > 0) {
         const clickUpDirections: DirectionMessage[] = result.tasks.map((task) => ({
           feedbackId: `CU-${task.id}`,
@@ -403,7 +528,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           type: "Today's tasks",
           source: `ClickUp:${task.id}`,
           fromPerson: task.creator?.username || 'ClickUp Space',
-          sentAt: task.date_created ? new Date(parseInt(task.date_created)).toISOString() : new Date().toISOString(),
+          sentAt: task.date_created ? new Date(parseInt(task.date_created, 10)).toISOString() : new Date().toISOString(),
           toAll: true,
           toSite: task.list?.name || 'All Sites',
           status: 'Published',
@@ -416,25 +541,52 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return [...clickUpDirections, ...nonClickUp];
         });
       }
+
+      return {
+        name: 'ClickUp',
+        state: 'OK',
+        detail: `Read ${result.tasks.length} tasks from space ${appConfig.clickUpSpaceId}. Nothing was written to ClickUp.`
+      };
     } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setIsClickUpConnected(false);
       console.warn('ClickUp fetch warning:', err);
+      return { name: 'ClickUp', state: 'Error', detail: `ClickUp read failed: ${msg}` };
     } finally {
       setIsFetchingClickUp(false);
     }
   };
 
-  // Master live fetch
   const fetchLiveAllData = async () => {
-    await Promise.all([fetchLiveSheets(), fetchLiveDrive(), fetchLiveClickUp()]);
+    const report = await Promise.all([fetchLiveSheets(), fetchLiveDrive(), fetchLiveClickUp()]);
+    setLastSyncReport(report);
+    const problems = report.filter((item) => item.state !== 'OK');
+    if (problems.length) {
+      setLiveError(problems.map((item) => `${item.name}: ${item.detail}`).join(' '));
+    }
   };
 
-  // Role flags matching Apps Script
-  const isWide = ['Admin', 'Engagement Lead'].includes(currentUser.Role);
-  const canReview = isWide || currentUser.Role === 'Site Manager' || currentUser.Role === 'Creative Designer';
-  const canPublish = isWide;
+  useEffect(() => {
+    if (googleToken) {
+      void fetchLiveAllData();
+    }
+    // Reload should refresh reads when a token is restored, not when other state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [googleToken]);
+
+  useEffect(() => {
+    if (clickUpToken) {
+      void testClickUpToken(clickUpToken).then((res) => {
+        if (res.success) void fetchLiveClickUp();
+      });
+    }
+    // Check a saved token once on load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const getTopPickRoom = (site: string, shift: string, mode: string, eventName: string = '', dateStr?: string) => {
     const ymd = dateStr || new Date().toISOString().slice(0, 10);
+    if (!currentUser) return { used: 0, limit: 0, left: 0 };
     return calculateTopPickRoom(
       uploads.map((u) => ({
         officer: u.officer,
@@ -474,6 +626,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     topPick: boolean;
     ext?: string;
   }>): Promise<UploadItem[]> => {
+    if (!currentUser) return [];
     const existingIds = uploads.map((u) => u.id);
     const created: UploadItem[] = [];
 
@@ -482,18 +635,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const topicMeta = topics.find((t) => t.Topic === f.topic) || topics[0];
       const dateClean = f.shiftDate.replace(/-/g, '');
       const prefix = `${siteMeta.Code}_${dateClean}_${topicMeta.Code}_`;
-
       const id = generateUploadId(prefix, existingIds.concat(created.map((c) => c.id)));
       const ext = f.ext || (f.mediaType === 'Video' ? 'mp4' : 'jpg');
       const fileName = buildE1FileName(id, f.mediaType, true, ext);
-      const folderPath = buildFolderPath(
-        siteMeta.FolderName,
-        f.shiftDate,
-        f.shift,
-        f.mode,
-        f.eventName,
-        fileName
-      );
+      const folderPath = buildFolderPath(siteMeta.FolderName, f.shiftDate, f.shift, f.mode, f.eventName, fileName);
 
       let place = '';
       let mapLink = '';
@@ -506,7 +651,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      const item: UploadItem = {
+      created.push({
         id,
         fileName,
         officer: currentUser.Email,
@@ -533,9 +678,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         topPick: f.topPick,
         reviewStatus: 'Pending',
         folderPath
-      };
-
-      created.push(item);
+      });
     }
 
     setUploads((prev) => [...created, ...prev]);
@@ -543,81 +686,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const reviewUpload = async (id: string, decision: ReviewStatus, note?: string) => {
+    if (!currentUser) return;
     const target = uploads.find((u) => u.id === id);
     if (!target) return;
 
     const now = new Date().toISOString();
-    let createdTaskId: string | undefined = undefined;
+    setUploads((prev) =>
+      prev.map((u) => {
+        if (u.id !== id) return u;
+        return {
+          ...u,
+          reviewStatus: decision,
+          reviewNote: note || u.reviewNote,
+          reviewedBy: currentUser.Email,
+          reviewedAt: now,
+          topPick: decision === 'Top pick' ? true : u.topPick
+        };
+      })
+    );
 
     if (decision === 'Reshoot' || decision === 'Top pick') {
-      const generatedId = '868z' + Math.random().toString(36).substring(2, 7);
-      createdTaskId = generatedId;
-
-      const ledgerKey = `upload-${id}-${decision === 'Reshoot' ? 'reshoot' : 'top'}`;
-      const listId = decision === 'Reshoot' ? '1300380000010216' : '1300380000010227';
-
-      setSyncLedger((prev) => [
-        {
-          key: ledgerKey,
-          listId,
-          taskId: generatedId,
-          state: 'Created',
-          updatedAt: now
-        },
-        ...prev
-      ]);
-
       setSyncLogs((prev) => [
         {
           id: Math.random().toString(),
           time: now,
           stage: 'followups',
-          state: 'OK',
-          detail: `${decision === 'Reshoot' ? 'Reshoot task created for officer in site list' : 'Top pick added to Marketing Content Handoff'} (${id} -> ClickUp #${generatedId})`
+          state: 'Info',
+          detail: `${decision} for ${id} was saved in this browser. ClickUp was not updated because this app has no ClickUp write client.`
         },
         ...prev
       ]);
     }
-
-    setUploads((prev) =>
-      prev.map((u) => {
-        if (u.id === id) {
-          return {
-            ...u,
-            reviewStatus: decision,
-            reviewNote: note || u.reviewNote,
-            reviewedBy: currentUser.Email,
-            reviewedAt: now,
-            topPick: decision === 'Top pick' ? true : u.topPick,
-            clickUpTask: createdTaskId || u.clickUpTask
-          };
-        }
-        return u;
-      })
-    );
   };
 
   const toggleUsedInFinal = (id: string) => {
-    setUploads((prev) =>
-      prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u))
-    );
+    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u)));
   };
 
   const acknowledgeDirection = (feedbackId: string, reply?: string) => {
+    if (!currentUser) return;
     const now = new Date().toISOString();
     setDirections((prev) =>
       prev.map((d) => {
-        if (d.feedbackId === feedbackId) {
-          const list = d.acknowledgedBy || [];
-          return {
-            ...d,
-            acknowledged: true,
-            acknowledgedAt: now,
-            acknowledgedBy: Array.from(new Set([...list, currentUser.Email])),
-            reply: reply || d.reply
-          };
-        }
-        return d;
+        if (d.feedbackId !== feedbackId) return d;
+        const list = d.acknowledgedBy || [];
+        return {
+          ...d,
+          acknowledged: true,
+          acknowledgedAt: now,
+          acknowledgedBy: Array.from(new Set([...list, currentUser.Email])),
+          reply: reply || d.reply
+        };
       })
     );
 
@@ -627,35 +746,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `Officer ${currentUser.Name} acknowledged direction (${feedbackId}) with comment: "${reply || 'Read in app'}"`
+        detail: `${currentUser.Name} acknowledged direction ${feedbackId} in this browser.`
       },
       ...prev
     ]);
   };
 
   const publishDirection = (feedbackId: string) => {
-    if (!canPublish) return;
+    if (!canPublish || !currentUser) return;
     const now = new Date().toISOString();
     setDirections((prev) =>
-      prev.map((d) => {
-        if (d.feedbackId === feedbackId) {
-          return {
-            ...d,
-            status: 'Published',
-            sentAt: now
-          };
-        }
-        return d;
-      })
+      prev.map((d) => (d.feedbackId === feedbackId ? { ...d, status: 'Published', sentAt: now } : d))
     );
-
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `Lead published draft feedback (${feedbackId}) to team`
+        detail: `${currentUser.Name} published direction ${feedbackId} in this browser.`
       },
       ...prev
     ]);
@@ -664,11 +773,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const addShiftReport = (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => {
     const siteMeta = sites.find((s) => s.SiteName === report.site) || sites[0];
     const reportId = `REP-${formatYmdClean(new Date())}-${siteMeta.Code}-${String(shiftReports.length + 1).padStart(2, '0')}`;
-    const newReport: ShiftReport = {
-      ...report,
-      reportId,
-      isLate: false
-    };
+    const newReport: ShiftReport = { ...report, reportId, isLate: false };
     setShiftReports((prev) => [newReport, ...prev]);
   };
 
@@ -678,42 +783,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   };
 
-  const triggerManualSync = async () => {
+  const triggerManualSync = async (): Promise<ConnectorReport[]> => {
     const now = new Date().toISOString();
-    await fetchLiveAllData();
-
+    const report = await Promise.all([fetchLiveSheets(), fetchLiveDrive(), fetchLiveClickUp()]);
+    setLastSyncReport(report);
+    const problems = report.filter((item) => item.state !== 'OK');
     setSyncHealth((prev) => ({
       ...prev,
       lastSync: now,
-      syncState: 'OK',
+      syncState: problems.length ? 'Error' : 'OK',
       stages: [
-        { name: 'places', state: 'OK', at: now, detail: `Geocoded all uploads with GPS coordinates` },
-        { name: 'directions', state: 'OK', at: now, detail: `Pulled site tasks from ClickUp space ${prev.space}` },
-        { name: 'followups', state: 'OK', at: now, detail: `Synced review actions and status ledgers` },
-        { name: 'events', state: 'OK', at: now, detail: `Checked 4 upcoming site activity schedules` }
+        { name: 'sheets', state: report[0].state === 'OK' ? 'OK' : 'Error', at: now, detail: report[0].detail },
+        { name: 'drive', state: report[1].state === 'OK' ? 'OK' : 'Error', at: now, detail: report[1].detail },
+        { name: 'clickup', state: report[2].state === 'OK' ? 'OK' : 'Error', at: now, detail: report[2].detail }
       ]
     }));
-
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'system',
-        state: 'OK',
-        detail: `Admin ${currentUser.Name} triggered manual sync cycle. Fetched live data.`
+        state: problems.length ? 'Error' : 'OK',
+        detail: problems.length
+          ? `Read sync finished with problems: ${problems.map((item) => `${item.name} (${item.state})`).join('; ')}.`
+          : 'Read sync finished for Sheets, Drive, and ClickUp. No remote records were written.'
       },
       ...prev
     ]);
+    if (problems.length) {
+      setLiveError(problems.map((item) => `${item.name}: ${item.detail}`).join(' '));
+    }
+    return report;
   };
 
   const toggleSyncPause = () => {
-    setSyncHealth((prev) => ({
-      ...prev,
-      paused: !prev.paused
-    }));
+    if (!isAdmin) return;
+    setSyncHealth((prev) => ({ ...prev, paused: !prev.paused }));
   };
 
   const resetToSampleData = () => {
+    if (!isAdmin) return;
     setUploads(INITIAL_UPLOADS);
     setDirections(INITIAL_DIRECTIONS);
     setShiftReports(INITIAL_REPORTS);
@@ -727,11 +836,155 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem(STORAGE_KEY_REPORTS);
   };
 
+  const updateAppConfig = (patch: Partial<AppIntegrationConfig>): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    setAppConfig((prev) => ({ ...prev, ...patch }));
+    return { ok: true, message: 'Configuration saved in this browser. Reads will use these ids. Nothing was written to Google or ClickUp.' };
+  };
+
+  const addDirectoryUser = (input: DirectoryUserInput): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const email = input.email.trim();
+    if (!email.includes('@') || email.startsWith('@') || email.endsWith('@')) {
+      return { ok: false, message: 'Enter a full email address.' };
+    }
+    if (people.some((p) => normalizeEmail(p.Email) === normalizeEmail(email))) {
+      return { ok: false, message: 'That email is already on the roster. Edit the existing row.' };
+    }
+    const person = sanitizePerson({
+      Email: email,
+      Name: input.name.trim() || email.split('@')[0],
+      Role: input.role,
+      Site: input.site,
+      Shift: input.shift,
+      Active: true
+    });
+    setPeople((prev) => sanitizeDirectory([...prev, person]));
+    return {
+      ok: true,
+      message: `${person.Email} is saved as ${person.Role} in this browser. The role applies when that Google account signs in here.`
+    };
+  };
+
+  const updateDirectoryUser = (
+    email: string,
+    patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>
+  ): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const key = normalizeEmail(email);
+    if (!people.some((p) => normalizeEmail(p.Email) === key)) {
+      return { ok: false, message: 'That person is not on the roster.' };
+    }
+    setPeople((prev) =>
+      sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, ...patch } : p)))
+    );
+    return { ok: true, message: `Updated ${email} in this browser.` };
+  };
+
+  const removeDirectoryUser = (email: string): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    if (normalizeEmail(email) === normalizeEmail(currentUser?.Email)) {
+      return { ok: false, message: 'You cannot remove the signed-in admin account.' };
+    }
+    const key = normalizeEmail(email);
+    setPeople((prev) => {
+      if (!prev.some((p) => normalizeEmail(p.Email) === key)) {
+        return sanitizeDirectory([
+          ...prev,
+          { Email: email, Name: email.split('@')[0], Role: 'Officer', Site: sites[0]?.SiteName || 'Cebu City', Active: false }
+        ]);
+      }
+      return sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, Active: false } : p)));
+    });
+    return {
+      ok: true,
+      message: `${email} can no longer open the product on this browser. Restoring access puts them back on the roster.`
+    };
+  };
+
+  const updateUpload = (
+    id: string,
+    patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>
+  ): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    if (!uploads.some((u) => u.id === id)) {
+      return { ok: false, message: 'That upload is not in this browser.' };
+    }
+    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
+    return { ok: true, message: `Updated upload ${id} in this browser.` };
+  };
+
+  const deleteUpload = (id: string): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const found = uploads.some((u) => u.id === id);
+    if (!found) return { ok: false, message: 'That upload is not in this browser.' };
+    setUploads((prev) => prev.filter((u) => u.id !== id));
+    return { ok: true, message: `Deleted upload ${id} from this browser. The file was not deleted from Google Drive.` };
+  };
+
+  const deleteAllUploads = (): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const count = uploads.length;
+    setUploads([]);
+    return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from this browser. Drive files were not touched.` };
+  };
+
+  const updateDirection = (
+    feedbackId: string,
+    patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged'>>
+  ): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const found = directions.some((d) => d.feedbackId === feedbackId);
+    if (!found) return { ok: false, message: 'That direction is not in this browser.' };
+    setDirections((prev) => prev.map((d) => (d.feedbackId === feedbackId ? { ...d, ...patch } : d)));
+    return { ok: true, message: `Updated direction ${feedbackId} in this browser.` };
+  };
+
+  const deleteDirection = (feedbackId: string): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const found = directions.some((d) => d.feedbackId === feedbackId);
+    if (!found) return { ok: false, message: 'That direction is not in this browser.' };
+    setDirections((prev) => prev.filter((d) => d.feedbackId !== feedbackId));
+    return { ok: true, message: `Deleted direction ${feedbackId} from this browser. ClickUp was not changed.` };
+  };
+
+  const deleteAllDirections = (): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const count = directions.length;
+    setDirections([]);
+    return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from this browser. ClickUp was not changed.` };
+  };
+
+  const updateShiftReport = (
+    reportId: string,
+    patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>
+  ): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const found = shiftReports.some((r) => r.reportId === reportId);
+    if (!found) return { ok: false, message: 'That report is not in this browser.' };
+    setShiftReports((prev) => prev.map((r) => (r.reportId === reportId ? { ...r, ...patch } : r)));
+    return { ok: true, message: `Updated report ${reportId} in this browser.` };
+  };
+
+  const deleteShiftReport = (reportId: string): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const found = shiftReports.some((r) => r.reportId === reportId);
+    if (!found) return { ok: false, message: 'That report is not in this browser.' };
+    setShiftReports((prev) => prev.filter((r) => r.reportId !== reportId));
+    return { ok: true, message: `Deleted report ${reportId} from this browser.` };
+  };
+
+  const deleteAllShiftReports = (): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    const count = shiftReports.length;
+    setShiftReports([]);
+    return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from this browser.` };
+  };
+
   return (
     <AppContext.Provider
       value={{
         currentUser,
-        setCurrentUser,
         people,
         sites,
         topics,
@@ -741,8 +994,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncHealth,
         syncLedger,
         syncLogs,
-
-        // Live Integration
+        authReady,
         googleUser,
         googleToken,
         isGoogleConnected: Boolean(googleUser && googleToken),
@@ -757,11 +1009,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isFetchingClickUp,
         liveClickUpData,
         liveError,
-
+        appConfig,
+        lastSyncReport,
         canReview,
         canPublish,
         isWide,
-
+        isAdmin,
         signInWithGoogle,
         signOutGoogle,
         fetchLiveSheets,
@@ -769,7 +1022,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         fetchLiveClickUp,
         fetchLiveAllData,
         testClickUpToken,
-
+        updateAppConfig,
+        addDirectoryUser,
+        updateDirectoryUser,
+        removeDirectoryUser,
+        updateUpload,
+        deleteUpload,
+        deleteAllUploads,
+        updateDirection,
+        deleteDirection,
+        deleteAllDirections,
+        updateShiftReport,
+        deleteShiftReport,
+        deleteAllShiftReports,
         addBatchUploads,
         reviewUpload,
         toggleUsedInFinal,
@@ -794,4 +1059,12 @@ export const useApp = () => {
     throw new Error('useApp must be used within an AppProvider');
   }
   return context;
+};
+
+export const useSignedInApp = () => {
+  const context = useApp();
+  if (!context.currentUser || !context.googleUser) {
+    throw new Error('useSignedInApp requires a Google session');
+  }
+  return context as AppContextType & { currentUser: Person; googleUser: User };
 };

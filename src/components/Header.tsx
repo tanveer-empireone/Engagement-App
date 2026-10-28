@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import React, { useEffect, useRef, useState } from 'react';
+import { useSignedInApp } from '../context/AppContext';
+import { AdminPanel } from './AdminPanel';
 import {
   Calendar,
   Camera,
@@ -10,6 +11,8 @@ import {
   BookOpen,
   PanelLeftClose,
   PanelLeftOpen,
+  LogOut,
+  Settings,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -18,7 +21,33 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
-  const { currentUser, uploads, canReview } = useApp();
+  const { currentUser, uploads, canReview, isAdmin, signOutGoogle } = useSignedInApp();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [adminOpen, setAdminOpen] = useState(false);
+  const desktopMenuRef = useRef<HTMLDivElement | null>(null);
+  const mobileMenuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointer = (event: MouseEvent) => {
+      const target = event.target as Node;
+      if (desktopMenuRef.current?.contains(target) || mobileMenuRef.current?.contains(target)) return;
+      setMenuOpen(false);
+    };
+    window.addEventListener('mousedown', onPointer);
+    return () => window.removeEventListener('mousedown', onPointer);
+  }, [menuOpen]);
+
+  const openAdmin = () => {
+    if (!isAdmin) return;
+    setAdminOpen(true);
+    setMenuOpen(false);
+  };
+
+  const signOut = () => {
+    setMenuOpen(false);
+    void signOutGoogle();
+  };
 
   // Persistent expandable/collapsible state for desktop/tablet sidebar
   const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
@@ -335,40 +364,19 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           </nav>
         </div>
 
-        {/* Bottom User Profile in Sidebar */}
-        <div className="pt-3 border-t border-slate-200/80 w-full">
-          {!isCollapsed ? (
-            <div
-              data-testid="sidebar-user-profile"
-              className="w-full flex items-center gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/60 shadow-2xs text-left"
-            >
-              <img
-                src={currentUser.Avatar}
-                alt={currentUser.Name}
-                className="w-8 h-8 rounded-full object-cover ring-2 ring-indigo-500/20 shrink-0"
-              />
-              <div className="flex-1 min-w-0">
-                <div className="text-xs font-semibold text-slate-900 truncate">
-                  {currentUser.Name}
-                </div>
-                <div className="text-[10px] text-slate-500 truncate">
-                  {currentUser.Role} · {currentUser.Site}
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div
-              data-testid="sidebar-user-profile"
-              className="w-10 h-10 mx-auto rounded-full ring-2 ring-indigo-500/20 relative overflow-hidden flex items-center justify-center p-0.5 bg-white shadow-2xs"
-              title={`${currentUser.Name} (${currentUser.Role} · ${currentUser.Site})`}
-            >
-              <img
-                src={currentUser.Avatar}
-                alt={currentUser.Name}
-                className="w-full h-full rounded-full object-cover"
-              />
-            </div>
-          )}
+        <div className="pt-3 border-t border-slate-200/80 w-full" ref={desktopMenuRef}>
+          <ProfileMenu
+            open={menuOpen}
+            collapsed={isCollapsed}
+            isAdmin={isAdmin}
+            name={currentUser.Name}
+            role={currentUser.Role}
+            site={currentUser.Site}
+            avatar={currentUser.Avatar}
+            onToggle={() => setMenuOpen((open) => !open)}
+            onAdmin={openAdmin}
+            onSignOut={signOut}
+          />
         </div>
       </aside>
 
@@ -395,15 +403,19 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           </div>
 
           {/* User Profile (Mobile) */}
-          <div className="flex items-center gap-1.5 bg-white/80 px-2.5 py-1.5 rounded-2xl border border-white/80 shadow-xs text-xs">
-            <img
-              src={currentUser.Avatar}
-              alt={currentUser.Name}
-              className="w-5 h-5 rounded-full object-cover ring-1 ring-indigo-500/30"
+          <div ref={mobileMenuRef}>
+            <ProfileMenu
+              open={menuOpen}
+              compact
+              isAdmin={isAdmin}
+              name={currentUser.Name}
+              role={currentUser.Role}
+              site={currentUser.Site}
+              avatar={currentUser.Avatar}
+              onToggle={() => setMenuOpen((open) => !open)}
+              onAdmin={openAdmin}
+              onSignOut={signOut}
             />
-            <span className="font-semibold text-slate-800 text-xs">
-              {currentUser.Name.split(' ')[0]}
-            </span>
           </div>
         </div>
       </header>
@@ -489,6 +501,103 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           )}
         </div>
       </nav>
+      {isAdmin && adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}
     </>
+  );
+};
+
+const ProfileMenu: React.FC<{
+  open: boolean;
+  collapsed?: boolean;
+  compact?: boolean;
+  isAdmin: boolean;
+  name: string;
+  role: string;
+  site: string;
+  avatar?: string;
+  onToggle: () => void;
+  onAdmin: () => void;
+  onSignOut: () => void;
+}> = ({ open, collapsed, compact, isAdmin, name, role, site, avatar, onToggle, onAdmin, onSignOut }) => {
+  const letter = (name || '?').slice(0, 1).toUpperCase();
+  const portrait = avatar ? (
+    <img src={avatar} alt={name} className="w-full h-full rounded-full object-cover" />
+  ) : (
+    <span className="text-[11px] font-bold text-indigo-700">{letter}</span>
+  );
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        data-testid="profile-menu-button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={onToggle}
+        title={`${name} (${role} · ${site})`}
+        className={
+          compact
+            ? 'flex items-center gap-1.5 bg-white/80 px-2.5 py-1.5 rounded-2xl border border-white/80 shadow-xs text-xs cursor-pointer'
+            : collapsed
+              ? 'w-10 h-10 mx-auto rounded-full ring-2 ring-indigo-500/20 flex items-center justify-center bg-white shadow-2xs cursor-pointer'
+              : 'w-full flex items-center gap-2.5 p-2 rounded-2xl bg-white/70 border border-slate-200/60 shadow-2xs text-left cursor-pointer'
+        }
+      >
+        <span
+          className={
+            compact
+              ? 'w-5 h-5 rounded-full overflow-hidden ring-1 ring-indigo-500/30 bg-indigo-50 flex items-center justify-center'
+              : 'w-8 h-8 rounded-full overflow-hidden ring-2 ring-indigo-500/20 bg-indigo-50 flex items-center justify-center shrink-0'
+          }
+        >
+          {portrait}
+        </span>
+        {!collapsed && (
+          <span className="min-w-0 text-left">
+            {compact ? (
+              <span className="font-semibold text-slate-800 text-xs">{name.split(' ')[0]}</span>
+            ) : (
+              <>
+                <span className="block text-xs font-semibold text-slate-900 truncate">{name}</span>
+                <span className="block text-[10px] text-slate-500 truncate">
+                  {role} · {site}
+                </span>
+              </>
+            )}
+          </span>
+        )}
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          className={`absolute z-50 min-w-44 rounded-2xl border border-slate-200 bg-white shadow-lg p-1 ${
+            compact ? 'right-0 top-full mt-2' : 'left-0 right-0 bottom-full mb-2'
+          }`}
+        >
+          {isAdmin && (
+            <button
+              type="button"
+              role="menuitem"
+              data-testid="open-admin-panel"
+              onClick={onAdmin}
+              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-indigo-50 cursor-pointer"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Admin panel
+            </button>
+          )}
+          <button
+            type="button"
+            role="menuitem"
+            onClick={onSignOut}
+            className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-rose-50 hover:text-rose-700 cursor-pointer"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            Sign out
+          </button>
+        </div>
+      )}
+    </div>
   );
 };

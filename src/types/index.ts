@@ -102,10 +102,24 @@ export interface ShiftReport {
 }
 
 export interface SyncStage {
-  name: 'places' | 'directions' | 'followups' | 'events';
+  name: 'places' | 'directions' | 'followups' | 'events' | 'sheets' | 'drive' | 'clickup';
   state: 'OK' | 'Error' | 'Running' | 'Not run';
   at?: string;
   detail?: string;
+}
+
+export interface AppIntegrationConfig {
+  sheetId: string;
+  driveRootId: string;
+  clickUpTeamId: string;
+  clickUpSpaceId: string;
+  appsScriptUrl: string;
+}
+
+export interface ConnectorReport {
+  name: 'Google Sheets' | 'Google Drive' | 'ClickUp';
+  state: 'OK' | 'Error' | 'Skipped';
+  detail: string;
 }
 
 export interface SyncHealth {

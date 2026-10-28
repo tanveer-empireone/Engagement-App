@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useApp } from '../context/AppContext';
+import { useSignedInApp } from '../context/AppContext';
 import {
   Upload,
   Star,
@@ -27,7 +27,7 @@ const QUICK_TOPICS = [
 ];
 
 export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onNavigateToLibrary }) => {
-  const { currentUser, sites, topics, addBatchUploads, getTopPickRoom } = useApp();
+  const { currentUser, sites, topics, addBatchUploads, getTopPickRoom } = useSignedInApp();
 
   // Smart defaults: already knows user's site & shift!
   const [site] = useState<string>(currentUser.Site || sites[0].SiteName);

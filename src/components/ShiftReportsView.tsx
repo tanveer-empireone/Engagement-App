@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useApp } from '../context/AppContext';
+import { useSignedInApp } from '../context/AppContext';
 import { ShiftReport } from '../types';
 import {
   FileText,
@@ -14,7 +14,7 @@ import {
 import { SHIFTS_LIST, SPOTS_LIST } from '../utils/idGenerator';
 
 export const ShiftReportsView: React.FC = () => {
-  const { shiftReports, addShiftReport, signOffReport, currentUser, sites, canReview } = useApp();
+  const { shiftReports, addShiftReport, signOffReport, currentUser, sites, canReview } = useSignedInApp();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [site, setSite] = useState(currentUser.Site || sites[0].SiteName);

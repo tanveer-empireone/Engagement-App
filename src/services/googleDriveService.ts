@@ -150,20 +150,23 @@ export async function getDriveItemDetails(
  * Master function to fetch live Google Drive state for the E1CX root folder.
  * Guaranteed READ-ONLY.
  */
-export async function fetchAllLiveDriveData(accessToken: string): Promise<LiveDriveResult> {
+export async function fetchAllLiveDriveData(
+  accessToken: string,
+  rootFolderId: string = TARGET_DRIVE_ROOT_FOLDER_ID
+): Promise<LiveDriveResult> {
   const [rootDetails, items, recentMedia] = await Promise.all([
-    getDriveItemDetails(accessToken, TARGET_DRIVE_ROOT_FOLDER_ID).catch(() => ({
-      id: TARGET_DRIVE_ROOT_FOLDER_ID,
+    getDriveItemDetails(accessToken, rootFolderId).catch(() => ({
+      id: rootFolderId,
       name: 'E1CX Experience'
     })),
-    fetchDriveItemsInFolder(accessToken, TARGET_DRIVE_ROOT_FOLDER_ID).catch(() => []),
+    fetchDriveItemsInFolder(accessToken, rootFolderId).catch(() => []),
     fetchRecentDriveMedia(accessToken, 30).catch(() => [])
   ]);
 
   const folders = items.filter((i) => i.isFolder);
 
   return {
-    rootFolderId: TARGET_DRIVE_ROOT_FOLDER_ID,
+    rootFolderId,
     rootFolderName: rootDetails.name,
     items,
     folders,
