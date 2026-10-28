@@ -21,7 +21,7 @@ interface HeaderProps {
 }
 
 export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
-  const { currentUser, uploads, canReview, isAdmin, signOutGoogle } = useSignedInApp();
+  const { currentUser, uploads, canReview, isAdmin, canUseCapture, canSeeIntegrations, signOutGoogle } = useSignedInApp();
   const [menuOpen, setMenuOpen] = useState(false);
   const [adminOpen, setAdminOpen] = useState(false);
   const desktopMenuRef = useRef<HTMLDivElement | null>(null);
@@ -177,7 +177,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               {!isCollapsed && <span className="flex-1 text-left">Today's Focus</span>}
             </button>
 
-            {/* Capture */}
+            {canUseCapture && (
             <button
               data-tab="nav-capture"
               onClick={() => setActiveTab('capture')}
@@ -215,6 +215,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                 <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-indigo-500 ring-1 ring-white" />
               )}
             </button>
+            )}
 
             {/* Library */}
             <button
@@ -305,16 +306,15 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               </button>
             )}
 
-            {/* Integrations Header / Divider */}
             {!isCollapsed ? (
               <div className="pt-3 px-3 pb-1 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Integrations
+                {canSeeIntegrations ? 'Integrations' : 'Help'}
               </div>
             ) : (
               <div className="w-8 my-2 border-t border-slate-200/70 mx-auto" />
             )}
 
-            {/* Integrations */}
+            {canSeeIntegrations && (
             <button
               data-tab="nav-connection"
               onClick={() => setActiveTab('connection')}
@@ -337,6 +337,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               <RefreshCw className="w-4 h-4 shrink-0" />
               {!isCollapsed && <span className="flex-1 text-left">Integrations</span>}
             </button>
+            )}
 
             {/* User Manual */}
             <button
@@ -427,7 +428,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
         aria-label="Mobile Bottom Navigation"
         className="fixed bottom-0 inset-x-0 z-40 glass-nav border-t border-white/80 shadow-lg md:hidden"
       >
-        <div className="grid grid-cols-4 items-center h-16 max-w-md mx-auto px-2">
+        <div className={`grid items-center h-16 max-w-md mx-auto px-2 ${canUseCapture ? 'grid-cols-4' : 'grid-cols-3'}`}>
           {/* Tab 1: Today */}
           <button
             data-tab="mobile-today"
@@ -440,7 +441,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             <span className="text-[10px] mt-1">Today</span>
           </button>
 
-          {/* Tab 2: Capture (Center Hero) */}
+          {canUseCapture && (
           <button
             data-tab="mobile-capture"
             onClick={() => setActiveTab('capture')}
@@ -459,6 +460,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             </div>
             <span className="text-[10px] mt-0.5">Capture</span>
           </button>
+          )}
 
           {/* Tab 3: Library */}
           <button

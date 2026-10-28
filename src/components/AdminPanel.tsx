@@ -89,6 +89,24 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               Google Sheets, Google Drive, and ClickUp are read-only from this app. Saving here does not write those systems, and a failed read is shown as a failure.
             </p>
           </div>
+          <div className="mt-2 p-3 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div className="text-xs font-bold text-slate-900">Capture media</div>
+              <p className="text-[11px] text-slate-500">
+                {app.showCaptureForAdmin
+                  ? 'Visible on the admin view. Other roles always see it.'
+                  : 'Hidden on the admin view. Other roles still see it.'}
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="toggle-admin-capture"
+              onClick={() => show(app.setShowCaptureForAdmin(!app.showCaptureForAdmin))}
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
+            >
+              {app.showCaptureForAdmin ? 'Hide Capture' : 'Show Capture'}
+            </button>
+          </div>
           {notice && (
             <div
               className={`mt-2 p-3 rounded-2xl border text-[11px] ${
@@ -137,7 +155,7 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         <div>
           <h3 className="text-sm font-bold text-slate-900">Add a user</h3>
           <p className="text-[11px] text-slate-500">
-            Admin is reserved for tanveer@empireonecx.com. Everyone else is an Officer unless you assign another role.
+            Set a role before they sign in. Choosing Admin gives them this panel and Integrations. tanveer@empireonecx.com stays an admin.
           </p>
         </div>
         <div className="grid sm:grid-cols-2 gap-2">
@@ -272,7 +290,7 @@ const PersonRow: React.FC<{
           <div className="rounded-xl px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-500">Admin</div>
         ) : (
           <select
-            value={person.Role === 'Admin' ? 'Officer' : person.Role}
+            value={ASSIGNABLE_ROLES.includes(person.Role) ? person.Role : 'Officer'}
             aria-label={`Role for ${person.Email}`}
             onChange={(event) => onUpdate({ Role: event.target.value as Role })}
             className="glass-input rounded-xl px-3 py-2 text-xs"

@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { AppProvider, useApp } from './context/AppContext';
+import React, { useEffect, useState } from 'react';
+import { AppProvider, useApp, useSignedInApp } from './context/AppContext';
 import { selectAppShell } from './utils/access';
 import { Header } from './components/Header';
 import { TodayView } from './components/TodayView';
@@ -12,7 +12,13 @@ import { UserManualView } from './components/UserManualView';
 import { BlockedScreen, SessionLoadingScreen, SignInScreen } from './components/SignInScreen';
 
 const MainContent: React.FC = () => {
+  const { canUseCapture, canSeeIntegrations } = useSignedInApp();
   const [activeTab, setActiveTab] = useState<string>('today');
+
+  useEffect(() => {
+    if (!canUseCapture && activeTab === 'capture') setActiveTab('today');
+    if (!canSeeIntegrations && activeTab === 'connection') setActiveTab('today');
+  }, [activeTab, canUseCapture, canSeeIntegrations]);
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row font-sans selection:bg-indigo-500 selection:text-white bg-slate-50/50">
@@ -26,13 +32,13 @@ const MainContent: React.FC = () => {
               onNavigateToReports={() => setActiveTab('reports')}
             />
           )}
-          {activeTab === 'capture' && (
+          {activeTab === 'capture' && canUseCapture && (
             <CaptureView onNavigateToLibrary={() => setActiveTab('library')} />
           )}
           {activeTab === 'library' && <LibraryView />}
           {activeTab === 'review' && <ReviewQueueView />}
           {activeTab === 'reports' && <ShiftReportsView />}
-          {activeTab === 'connection' && <ConnectionView />}
+          {activeTab === 'connection' && canSeeIntegrations && <ConnectionView />}
           {activeTab === 'manual' && <UserManualView />}
         </main>
       </div>

@@ -25,7 +25,8 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     canPublish,
     uploads,
     shiftReports,
-    getTopPickRoom
+    getTopPickRoom,
+    canUseCapture
   } = useSignedInApp();
 
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
@@ -95,7 +96,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
         </div>
       </div>
 
-      {/* 2. Primary Focal Anchor: Giant tactile "Snap Shift Moments" Button */}
+      {canUseCapture && (
       <button
         onClick={onNavigateToCapture}
         className="w-full glass-card hover:bg-white/90 active:scale-[0.99] p-5 rounded-3xl border border-white/80 shadow-sm flex items-center justify-between transition cursor-pointer group"
@@ -113,6 +114,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
           <ArrowRight className="w-4 h-4" />
         </div>
       </button>
+      )}
 
       {/* 3. Single Daily Direction Focus Card (One thing to do, no wall of text) */}
       {primaryDirection && (

@@ -4,6 +4,8 @@ import { Person } from '../types';
 import {
   ADMIN_EMAIL,
   canOpenAdminPanel,
+  canSeeIntegrations,
+  canUseCapture,
   clampRole,
   resolveSessionPerson,
   sanitizeDirectory,
@@ -48,7 +50,7 @@ test('the admin email stays Admin even if a saved role says otherwise', () => {
   assert.equal(selectAppShell({ authReady: true, hasGoogleUser: true, person }), 'app');
 });
 
-test('a directory row cannot grant Admin to anyone else, including after reload', () => {
+test('an admin can upgrade another Google account to Admin, and that role survives reload', () => {
   const saved: Person[] = sanitizeDirectory([
     tanveer,
     {
@@ -61,11 +63,23 @@ test('a directory row cannot grant Admin to anyone else, including after reload'
   ]);
   const person = resolveSessionPerson({ email: 'lead@empireonecx.com', displayName: 'Lead' }, saved);
   assert.ok(person);
-  assert.equal(person.Role, 'Officer');
+  assert.equal(person.Role, 'Admin');
   assert.equal(person.Site, 'Toronto');
-  assert.equal(clampRole('lead@empireonecx.com', 'Admin'), 'Officer');
-  assert.equal(canOpenAdminPanel(person), false);
+  assert.equal(clampRole('lead@empireonecx.com', 'Admin'), 'Admin');
+  assert.equal(canOpenAdminPanel(person), true);
+  assert.equal(canSeeIntegrations(person), true);
   assert.notEqual(person.Email, ADMIN_EMAIL);
+});
+
+test('admins hide Capture until it is shown, and other roles never see Integrations or the admin panel', () => {
+  const officer = resolveSessionPerson({ email: 'officer@empireonecx.com', displayName: 'Pat' }, []);
+  assert.ok(officer);
+  assert.equal(canUseCapture(officer, false), true);
+  assert.equal(canSeeIntegrations(officer), false);
+  assert.equal(canOpenAdminPanel(officer), false);
+  assert.equal(canUseCapture(tanveer, false), false);
+  assert.equal(canUseCapture(tanveer, true), true);
+  assert.equal(canSeeIntegrations(tanveer), true);
 });
 
 test('an assigned non-admin role survives reload for that Google account', () => {

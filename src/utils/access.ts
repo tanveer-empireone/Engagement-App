@@ -1,16 +1,17 @@
 import { Person, Role } from '../types';
 
-/** The only account that can administer this app. */
+/** The original admin. This account stays Admin and cannot be demoted. */
 export const ADMIN_EMAIL = 'tanveer@empireonecx.com';
 
 export const ASSIGNABLE_ROLES: Role[] = [
+  'Admin',
   'Engagement Lead',
   'Site Manager',
   'Creative Designer',
   'Officer'
 ];
 
-const KNOWN_ROLES = new Set<Role>(['Admin', ...ASSIGNABLE_ROLES]);
+const KNOWN_ROLES = new Set<Role>(ASSIGNABLE_ROLES);
 
 export type AppShell = 'loading' | 'signin' | 'blocked' | 'app';
 
@@ -22,11 +23,11 @@ export function isAdminEmail(email: string | null | undefined): boolean {
   return normalizeEmail(email) === ADMIN_EMAIL;
 }
 
-/** Admin is reserved for the one admin email. Any other Admin value becomes Officer. */
+/** Keep a real role. The original admin email is always Admin. Unknown values become Officer. */
 export function clampRole(email: string, role: string | null | undefined): Role {
   if (isAdminEmail(email)) return 'Admin';
   const candidate = (role || 'Officer') as Role;
-  if (candidate === 'Admin' || !KNOWN_ROLES.has(candidate)) return 'Officer';
+  if (!KNOWN_ROLES.has(candidate)) return 'Officer';
   return candidate;
 }
 
@@ -90,8 +91,24 @@ export function selectAppShell(input: {
   return 'app';
 }
 
+export function isAdminPerson(person: Person | null): boolean {
+  return !!person && person.Active !== false && person.Role === 'Admin';
+}
+
 export function canOpenAdminPanel(person: Person | null): boolean {
-  return !!person && person.Active !== false && isAdminEmail(person.Email);
+  return isAdminPerson(person);
+}
+
+/** Integrations is an admin tool. Other roles do not see it. */
+export function canSeeIntegrations(person: Person | null): boolean {
+  return isAdminPerson(person);
+}
+
+/** Capture is hidden for admins until an admin turns it back on. Everyone else still sees it. */
+export function canUseCapture(person: Person | null, showCaptureForAdmin: boolean): boolean {
+  if (!person || person.Active === false) return false;
+  if (person.Role === 'Admin') return showCaptureForAdmin;
+  return true;
 }
 
 export function samePersonRecord(a: Person, b: Person): boolean {

@@ -36,6 +36,8 @@ import {
 } from '../utils/idGenerator';
 import {
   canOpenAdminPanel,
+  canSeeIntegrations,
+  canUseCapture,
   normalizeEmail,
   resolveSessionPerson,
   samePersonRecord,
@@ -114,6 +116,10 @@ interface AppContextType {
   canPublish: boolean;
   isWide: boolean;
   isAdmin: boolean;
+  showCaptureForAdmin: boolean;
+  setShowCaptureForAdmin: (value: boolean) => ActionResult;
+  canUseCapture: boolean;
+  canSeeIntegrations: boolean;
 
   signInWithGoogle: () => Promise<void>;
   signOutGoogle: () => Promise<void>;
@@ -178,6 +184,7 @@ const STORAGE_KEY_REPORTS = 'e1_engagement_reports_v4';
 const STORAGE_KEY_PEOPLE = 'e1_engagement_people_v1';
 const STORAGE_KEY_CONFIG = 'e1_app_config_v1';
 const LEGACY_USER_KEY = 'e1_engagement_active_user_v5';
+const STORAGE_KEY_SHOW_CAPTURE = 'e1_admin_show_capture_v1';
 
 function loadPeople(): Person[] {
   try {
@@ -256,6 +263,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [liveClickUpData, setLiveClickUpData] = useState<Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
+  const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem(STORAGE_KEY_SHOW_CAPTURE) === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   const googleEmail = googleUser?.email || '';
   const googleName = googleUser?.displayName || '';
@@ -270,6 +284,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [googleEmail, googleName, googlePhoto, people]);
 
   const isAdmin = canOpenAdminPanel(currentUser);
+  const captureAllowed = canUseCapture(currentUser, showCaptureForAdmin);
+  const integrationsAllowed = canSeeIntegrations(currentUser);
   const isWide = currentUser?.Role === 'Admin' || currentUser?.Role === 'Engagement Lead';
   const canReview = Boolean(
     isWide || currentUser?.Role === 'Site Manager' || currentUser?.Role === 'Creative Designer'
@@ -283,8 +299,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const denyAdmin = (): ActionResult => ({
     ok: false,
-    message: 'Only tanveer@empireonecx.com can change admin settings.'
+    message: 'Only an admin can change these settings.'
   });
+
+  const setShowCaptureForAdmin = (value: boolean): ActionResult => {
+    if (!isAdmin) return denyAdmin();
+    setShowCaptureForAdminState(value);
+    try {
+      localStorage.setItem(STORAGE_KEY_SHOW_CAPTURE, value ? 'true' : 'false');
+    } catch {
+      // The in-memory flag still applies for this visit.
+    }
+    return {
+      ok: true,
+      message: value
+        ? 'Capture media is visible on the admin view.'
+        : 'Capture media is hidden on the admin view. Other roles still see it.'
+    };
+  };
 
   useEffect(() => {
     try {
@@ -1015,6 +1047,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canPublish,
         isWide,
         isAdmin,
+        showCaptureForAdmin,
+        setShowCaptureForAdmin,
+        canUseCapture: captureAllowed,
+        canSeeIntegrations: integrationsAllowed,
         signInWithGoogle,
         signOutGoogle,
         fetchLiveSheets,
