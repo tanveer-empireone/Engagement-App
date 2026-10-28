@@ -1,0 +1,8 @@
+{
+  "name": "E1 Engagement Capture",
+  "description": "EmpireOne CX engagement capture platform for shift moments, media group upload, review workflows, shift reports, and ClickUp task synchronization.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

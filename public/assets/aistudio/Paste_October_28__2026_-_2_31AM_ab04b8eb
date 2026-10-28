@@ -1,0 +1,1028 @@
+/**
+ * E1 Engagement Capture - automation (owned by EmpireOne CX Google Workspace).
+ * Runs on a time trigger. Works independently of Claude.
+ *  - Place name + Google Maps link for each upload (from GPS)
+ *  - Google Meet "Notes by Gemini" -> draft team updates (Lead publishes in the app)
+ *  - ClickUp: directions in, follow-up tasks out (activates when CLICKUP_TOKEN is set)
+ */
+var SHEET_ID = '1Ts2VFZawgF2SmU4VSQf0ld6p7cEHkmE2GLzc-dKfk5E';
+var MANUAL_URL_PROP = 'MANUAL_URL';
+var TZ = 'America/Toronto';
+
+function ss_() { return SpreadsheetApp.openById(SHEET_ID); }
+function props_() { return PropertiesService.getScriptProperties(); }
+
+/** Header -> column index (1-based) map; adds missing headers at the end. */
+function cols_(sh, needed) {
+  var lastCol = sh.getLastColumn();
+  var head = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var map = {};
+  head.forEach(function (h, i) { if (h) map[h] = i + 1; });
+  (needed || []).forEach(function (n) {
+    if (!map[n]) {
+      lastCol += 1;
+      sh.getRange(1, lastCol).setValue(n).setFontWeight('bold');
+      map[n] = lastCol;
+    }
+  });
+  return map;
+}
+
+/* ------------------------------------------------------------------ SETUP */
+function setup() {
+  e1Admin_();
+  var ss = ss_();
+  ['Uploads','Feedback','Reports','People','Sites','Shifts','Topics'].forEach(function(name) { if (!ss.getSheetByName(name)) throw new Error('Missing required tab: '+name); });
+  cols_(ss.getSheetByName('Uploads'), ['Place','MapLink','UsedInFinal','ClickUpTask']);
+  cols_(ss.getSheetByName('Feedback'), ['Status','Source','Title']);
+  cols_(ss.getSheetByName('Reports'), ['ClickUpTask']);
+  ScriptApp.getProjectTriggers().forEach(function(t) { if (['runAll','runAll_'].indexOf(t.getHandlerFunction())>=0) ScriptApp.deleteTrigger(t); });
+  ScriptApp.newTrigger('runAll_').timeBased().everyMinutes(10).create();
+  return 'One runAll trigger installed for '+Session.getEffectiveUser().getEmail();
+}
+
+function runAll_() {
+  var p = props_(), runner = p.getProperty('RUN_AS');
+  if (p.getProperty('PAUSED')) return;
+  if (!runner || String(Session.getEffectiveUser().getEmail()).toLowerCase() !== runner.toLowerCase()) return;
+  var lock = LockService.getScriptLock(); if (!lock.tryLock(5000)) return;
+  E1_DEADLINE = Date.now()+240000; var errors = [];
+  try {
+    [['places',updatePlaces_],['directions',clickupPullDirections_],['followups',clickupPushFollowUps_],['events',clickupEventFlows_]].forEach(function(stage) {
+      try { e1Within_(); if (stage[0] !== 'places' && !p.getProperty('CLICKUP_TOKEN')) throw new Error('ClickUp token is missing.'); stage[1](); e1Log_(stage[0],'OK','Completed'); }
+      catch(e) { errors.push(stage[0]+': '+e.message); e1Log_(stage[0],'Error',e.message); console.error(stage[0]+': '+e.message); }
+    });
+    p.setProperty('E1_LAST_SYNC',new Date().toISOString()); p.setProperty('E1_SYNC_STATE',errors.length?'Error':'OK');
+  } finally { lock.releaseLock(); }
+  if (errors.length) throw new Error(errors.join(' | '));
+}
+function safe_(fn) { try { fn(); } catch (e) { console.error(fn.name + ': ' + e); } }
+
+/* ------------------------------------------------- PLACE NAME + MAP LINK */
+function updatePlaces_() {
+  var sh = ss_().getSheetByName('Uploads'); var c = cols_(sh);
+  var n = sh.getLastRow() - 1; if (n < 1) return;
+  var loc = sh.getRange(2, c.Location, n, 1).getValues();
+  var place = sh.getRange(2, c.Place, n, 1).getValues();
+  var map = sh.getRange(2, c.MapLink, n, 1).getValues();
+  var geo = Maps.newGeocoder(); var changed = false, calls = 0;
+  for (var i = 0; i < n; i++) {
+    var s = String(loc[i][0] || '').trim(); if (!s) continue;
+    var p = s.split(','); if (p.length < 2) continue;
+    var lat = parseFloat(p[0]), lng = parseFloat(p[1]); if (isNaN(lat) || isNaN(lng) || Math.abs(lat)>90 || Math.abs(lng)>180) continue;
+    if (!map[i][0]) { map[i][0] = 'https://www.google.com/maps?q=' + lat + ',' + lng; changed = true; }
+    if (!place[i][0] && calls < 40) {
+      calls++;
+      var r = geo.reverseGeocode(lat, lng);
+      var foundPlace=placeName_(r); if(foundPlace){place[i][0]=foundPlace;changed=true;}
+    }
+  }
+  if (changed) { sh.getRange(2, c.Place, n, 1).setValues(place); sh.getRange(2, c.MapLink, n, 1).setValues(map); }
+}
+function placeName_(r) {
+  if (!r || r.status !== 'OK' || !r.results.length) return '';
+  var city = '', region = '', country = '';
+  r.results[0].address_components.forEach(function (a) {
+    if (!city && (a.types.indexOf('locality') >= 0 || a.types.indexOf('postal_town') >= 0)) city = a.long_name;
+    if (!region && a.types.indexOf('administrative_area_level_1') >= 0) region = a.short_name;
+    if (!country && a.types.indexOf('country') >= 0) country = a.short_name;
+  });
+  if (!city) r.results[0].address_components.forEach(function (a) {
+    if (!city && a.types.indexOf('administrative_area_level_2') >= 0) city = a.long_name; });
+  return [city, region, country].filter(String).join(', ');
+}
+
+/* --------------------------------------------- GOOGLE MEET NOTES -> DRAFTS */
+// Every "Notes by Gemini" doc is checked. Two ways in:
+//  1. Team meetings (title contains a TEAM word): the whole summary + next steps, to all officers.
+//  2. Any other meeting: ONLY lines about engagement (ENGAGEMENT_WORDS), never lines with PRIVATE_WORDS.
+//     Lines naming a site go to that site; the rest go to all officers.
+// Everything arrives as a Draft. Nothing reaches officers until a lead taps "Publish to team".
+var MEET_KEYWORDS = ['team brief', 'huddle', 'town hall', 'all hands', 'officers briefing'];
+var ENGAGEMENT_WORDS = ['engagement', 'event', 'celebrat', 'recognition', 'award', 'birthday', 'anniversar', 'huddle',
+  'town hall', 'team building', 'contest', 'raffle', 'games', 'activity', 'activities', 'morale', 'survey', 'wellness',
+  'photo', 'video', 'filming', 'film ', 'content', 'social media', 'post ', 'posting', 'shout-out', 'shoutout', 'theme',
+  'campaign', 'decorat', 'officer', 'floor', 'testimonial', 'culture', 'holiday', 'christmas', 'halloween', 'party'];
+var PRIVATE_WORDS = ['hire', 'hiring', 'recruit', 'candidate', 'interview', 'resume', 'salary', 'salaries', 'pay ',
+  'payroll', 'compensation', 'bonus', 'raise', 'terminat', 'disciplin', 'performance review', 'pip ', 'layoff',
+  'budget', 'cost', 'invoice', 'contract', 'client', 'customer data', 'confidential', 'legal', 'lawsuit', 'medical',
+  'resign', 'promotion', 'headcount', 'pricing', 'revenue', 'suspen', 'attrition', 'absen', 'tardi', 'warning',
+  'incident report', 'names of', 'capacity', 'staffing', 'schedule adherence', 'kpi', 'metrics'];
+// Meetings with these words in the title are never used (leadership / project meetings).
+var SKIP_TITLES = ['website', 'brd', 'capacity', 'interview', '1:1', 'one on one', 'performance', 'budget', 'client', 'sales', 'finance', 'hr '];
+var SITE_WORDS = { 'Cebu City': ['cebu'], 'Carcar': ['carcar'], 'San Carlos': ['san carlos', 'st. carlos', 'st carlos'],
+  'Urdaneta': ['urdaneta'], 'Toronto': ['toronto'], 'Santa Marta': ['santa marta'] };
+
+/** Action items start with [Owner]. Keep them only when the owner is the team/group or someone in the People sheet. */
+var PEOPLE_NAMES_ = null;
+function forTeam_(line) {
+  var m = line.match(/^\[([^\]]+)\]/); if (!m) return true;
+  var owner = m[1].toLowerCase();
+  if (/\b(group|team|all|everyone|officers?)\b/.test(owner)) return true;
+  if (!PEOPLE_NAMES_) PEOPLE_NAMES_ = rows_(ss_().getSheetByName('People')).map(function (p) { return String(p.Name).toLowerCase(); });
+  return PEOPLE_NAMES_.some(function (n) { return n.split(/\s+/).some(function (w) { return w.length >= 4 && owner.indexOf(w) >= 0; }); });
+}
+function hasAny_(s, words) { s = ' ' + s.toLowerCase() + ' '; return words.some(function (w) { return s.indexOf(w) >= 0; }); }
+
+function importMeetNotes_(sinceOverride) {
+  var since = sinceOverride || props_().getProperty('MEET_SINCE') || new Date(Date.now() - 2 * 864e5).toISOString();
+  var q = "title contains 'Notes by Gemini' and mimeType = 'application/vnd.google-apps.document' and modifiedDate > '" + since + "'";
+  var files = DriveApp.searchFiles(q);
+  var fb = ss_().getSheetByName('Feedback'); var c = cols_(fb);
+  var existing = fb.getLastRow() > 1 ? fb.getRange(2, c.Source, fb.getLastRow() - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  var newest = since, added = 0;
+  while (files.hasNext()) {
+    var f = files.next(); var title = f.getName();
+    var mod = f.getLastUpdated().toISOString(); if (mod > newest) newest = mod;
+    var src = 'Meet:' + f.getId();
+    if (existing.some(function (e) { return e.indexOf(src) === 0; })) continue;
+    var text = DocumentApp.openById(f.getId()).getBody().getText();
+    var short = title.replace(/ - Notes by Gemini.*$/i, '');
+    var groups = {};
+    if (hasAny_(title, SKIP_TITLES)) { existing.push(src); continue; }
+    if (hasAny_(title, MEET_KEYWORDS)) {
+      var all = meetDigest_(text).split('\n').filter(function (l) { return !hasAny_(l, PRIVATE_WORDS); });
+      if (all.length) groups['ALL'] = all;
+    } else {
+      meetLines_(text).forEach(function (l) {
+        if (!hasAny_(l, ENGAGEMENT_WORDS) || hasAny_(l, PRIVATE_WORDS)) return;
+        if (!forTeam_(l)) return;
+        var site = Object.keys(SITE_WORDS).filter(function (s) { return hasAny_(l, SITE_WORDS[s]); });
+        var key = site.length === 1 ? site[0] : 'ALL';
+        (groups[key] = groups[key] || []).push(l);
+      });
+    }
+    Object.keys(groups).forEach(function (key) {
+      var msg = groups[key].join('\n'); if (msg.length > 1800) msg = msg.slice(0, 1800) + '...';
+      var row = new Array(fb.getLastColumn()).fill('');
+      row[c.FeedbackID - 1] = Utilities.getUuid().slice(0, 8);
+      if (key === 'ALL') row[c.ToAll - 1] = true; else row[c.ToSite - 1] = key;
+      row[c.FromPerson - 1] = Session.getEffectiveUser().getEmail();
+      row[c.Type - 1] = 'Theme to communicate';
+      row[c.Message - 1] = msg + '\n\nFrom meeting: ' + short;
+      row[c.SentAt - 1] = new Date(); row[c.Acknowledged - 1] = false;
+      row[c.Status - 1] = 'Draft'; row[c.Source - 1] = src + (key === 'ALL' ? '' : ':' + key); row[c.Title - 1] = short;
+      fb.appendRow(row); added++;
+    });
+    if (!Object.keys(groups).length) { existing.push(src); }
+  }
+  if (!sinceOverride) props_().setProperty('MEET_SINCE', newest);
+  return added + ' draft(s) added';
+}
+/** Summary and next-steps lines, one item per line (paragraphs kept whole). */
+function meetLines_(text) {
+  var lines = text.split(/\n/).map(function (l) { return l.trim(); }).filter(String), out = [], keep = false;
+  lines.forEach(function (l) {
+    var h = l.toLowerCase();
+    if (/^(summary|suggested next steps|next steps|action items)$/.test(h)) { keep = true; return; }
+    if (/^(details|transcript|attachments|invited)/.test(h) || /^(want to see more|tip:|you should review gemini)/.test(h)) { keep = false; return; }
+    if (keep) out.push(l);
+  });
+  return out;
+}
+/** Test helper: re-checks the last 7 days of meeting notes without moving the bookmark. */
+function testMeetNotes_() { return importMeetNotes_(new Date(Date.now() - 7 * 864e5).toISOString()); }
+
+/** Keeps the Summary and Next steps sections, trimmed for phones. */
+function meetDigest_(text) {
+  var lines = text.split(/\n/).map(function (l) { return l.trim(); }).filter(String);
+  var out = [], keep = false;
+  lines.forEach(function (l) {
+    var h = l.toLowerCase();
+    if (/^(summary|suggested next steps|next steps|action items)$/.test(h)) { keep = true; out.push(l.toUpperCase()); return; }
+    if (/^(details|transcript|attachments|invited)/.test(h)) { keep = false; return; }
+    if (keep) out.push(l);
+  });
+  var s = out.join('\n');
+  return s.length > 1800 ? s.slice(0, 1800) + '...' : s;
+}
+
+/* ----------------------------------------------------------------- CLICKUP */
+// Token is stored in Project Settings > Script properties > CLICKUP_TOKEN (never in code or the sheet).
+var CU_TEAM = '90161592694';
+var CU_SPACE_NAME = 'Engagement';
+var SITE_FOLDERS = { 'San Carlos': 'San Carlos', 'Carcar': 'Carcar', 'Cebu City': 'Cebu City', 'Urdaneta': 'Urdaneta City Pangasinan' };
+
+function cu_(path, method, body) {
+  method = String(method || 'get').toLowerCase(); cuGuard_(path,method);
+  var token=props_().getProperty('CLICKUP_TOKEN'); if (!token) throw new Error('ClickUp token missing.');
+  var o={method:method,headers:{Authorization:token},muteHttpExceptions:true,contentType:'application/json'};
+  if(body) o.payload=JSON.stringify(body);
+  for(var attempt=0;attempt<3;attempt++) {
+    e1Within_(); var r=UrlFetchApp.fetch('https://api.clickup.com/api/v2/'+path,o), code=r.getResponseCode();
+    if(code>=200&&code<300) return JSON.parse(r.getContentText()||'{}');
+    if(method==='get'&&(code===429||code>=500)&&attempt<2) { Utilities.sleep((attempt+1)*1500); continue; }
+    throw new Error('ClickUp request failed ('+code+') at '+path.split('?')[0]);
+  }
+}
+/** Finds list ids by name once and caches them. */
+function cuLists_() {
+  if (typeof E1_LISTS !== 'undefined' && E1_LISTS) return E1_LISTS;
+  var out={daily:{},events:{},content:null,surveys:null,followups:null};
+  cu_('space/'+E1_SPACE+'/folder?archived=false').folders.forEach(function(f) {
+    (f.lists||[]).forEach(function(l) {
+      Object.keys(SITE_FOLDERS).forEach(function(site) { if(f.name===SITE_FOLDERS[site]) { if(l.name==='Daily Tasks') out.daily[site]=String(l.id); if(l.name==='Events & Activities') out.events[site]=String(l.id); } });
+      if(f.name==='Engagement HQ'&&l.name==='Marketing Content Handoff') out.content=String(l.id);
+      if(f.name==='Engagement HQ'&&l.name==='Capture App Follow-ups') out.followups=String(l.id);
+      if(f.name==='Engagement HQ'&&l.name==='Surveys') out.surveys=String(l.id);
+    });
+  });
+  if(Object.keys(out.daily).length!==4||Object.keys(out.events).length!==4||!out.content||!out.followups) throw new Error('Engagement list mapping is incomplete.');
+  props_().setProperty('CU_SPACE_ID',E1_SPACE); props_().setProperty('CU_LISTS',JSON.stringify(out));
+  E1_LISTS=out; return out;
+}
+/** Open tasks in each site's Daily Tasks list -> Today (directions). Tag "theme" = theme; tag "all" = every site. */
+function clickupPullDirections_() {
+  var L=cuLists_(), fb=ss_().getSheetByName('Feedback'), c=cols_(fb), data=fb.getDataRange().getValues(), src={}, active={}, current={};
+  for(var i=1;i<data.length;i++) src[String(data[i][c.Source-1])]=i+1;
+  Object.keys(L.daily).forEach(function(site) {
+    var s=guSite_(site),tz=siteTz_(s.Code),today=Utilities.formatDate(new Date(),tz,'yyyy-MM-dd');
+    e1ListTasks_(L.daily[site],true).forEach(function(t) {
+      current[t.id]=t;
+      if(!e1Eligible_(t,today,tz)) return;
+      var due=t.due_date?Utilities.formatDate(new Date(Number(t.due_date)),tz,'yyyy-MM-dd'):'nodue',key='ClickUp:'+t.id+':'+due,tags=e1Tags_(t);
+      active[key]=true;
+      var rn=src[key]||src['ClickUp:'+t.id],old=rn?data[rn-1]:null,row=old?old.slice():new Array(fb.getLastColumn()).fill('');
+      var msg=t.name+(t.description?'\n'+t.description.slice(0,1500):'')+'\n\nClickUp: '+(t.url||'https://app.clickup.com/t/'+t.id);
+      row[c.FeedbackID-1]=old?old[c.FeedbackID-1]:Utilities.getUuid().slice(0,12);
+      row[c.ToAll-1]=tags.indexOf('all')>=0; row[c.ToSite-1]=tags.indexOf('all')>=0?'':site;
+      row[c.FromPerson-1]=(t.creator&&t.creator.email)||'';
+      row[c.Type-1]=tags.indexOf('theme')>=0?'Theme to communicate':"Today's tasks";
+      var changed=!old||old[c.Message-1]!==msg;
+      row[c.Message-1]=e1Cell_(msg); row[c.Title-1]=e1Cell_(t.name); row[c.Source-1]=key;
+      row[c.Status-1]=(tags.indexOf('draft')>=0||tags.indexOf('review')>=0)?'Draft':'Published';
+      if(changed||!old||old[c.Status-1]!=='Published'||(old[c.SentAt-1] instanceof Date&&Utilities.formatDate(old[c.SentAt-1],tz,'yyyy-MM-dd')!==today)) row[c.SentAt-1]=new Date();
+      if(changed) { row[c.Acknowledged-1]=false; row[c.Reply-1]=''; row[c.AcknowledgedAt-1]=''; }
+      if(rn) fb.getRange(rn,1,1,row.length).setValues([row]); else { fb.appendRow(row); src[key]=fb.getLastRow(); }
+    });
+  });
+  // Withdraw closed, postponed, unapproved or deleted directions already imported.
+  data=fb.getDataRange().getValues();
+  for(var j=1;j<data.length;j++) {
+    var key=String(data[j][c.Source-1]);
+    if(key.indexOf('ClickUp:')===0&&!active[key]) fb.getRange(j+1,c.Status).setValue('Draft');
+  }
+  var v=fb.getDataRange().getValues();
+  for(var k=1;k<v.length;k++) {
+    var r=v[k],source=String(r[c.Source-1]),tid=(source.match(/^ClickUp:([^:]+)/)||[])[1];
+    if(!tid||!E1_TASKS[tid]||r[c.Acknowledged-1]!==true||r[c.Status-1]!=='Published') continue;
+    e1Ack_(tid,String(r[c.FeedbackID-1]),e1Text_(r[c.Reply-1],1000));
+  }
+}
+/** Reshoots and reviewer Top picks -> ClickUp tasks. Late reports -> task for the Site Manager. */
+function clickupPushFollowUps_() {
+  var L=cuLists_(),ss=ss_(),up=ss.getSheetByName('Uploads'),c=cols_(up),v=up.getDataRange().getValues();
+  for(var i=1;i<v.length;i++) {
+    var r=v[i],st=r[c.ReviewStatus-1],site=r[c.Site-1],id=String(r[c.UploadID-1]);
+    if(!id||['Reshoot','Top pick'].indexOf(st)<0) continue;
+    var key='upload-'+id+'-'+(st==='Reshoot'?'reshoot':'top'),list=st==='Reshoot'?(L.daily[site]||L.followups):L.content;
+    var existing=String(r[c.ClickUpTask-1]||'');
+    // Preserve previously created task references; reconcile future state changes in the ledger.
+    var known=e1Ledger_().getDataRange().getValues().some(function(x){return x[0]===key;});
+    var previouslyTracked=e1Ledger_().getDataRange().getValues().some(function(x){return String(x[0]).indexOf('upload-'+id+'-')===0;});
+    if(existing&&!known&&!previouslyTracked) { e1Ledger_().appendRow([key,list,existing,'Adopted',new Date(),'']); continue; }
+    var owner=e1Owner_(site,r[c.Officer-1],false),file=e1FileFromPath_(r[c.Photo-1]||r[c.Video-1]),link=file?file.getUrl():r[c.DriveLink-1];
+    var body=e1TaskBody_(st+': '+id+' ('+site+')','Officer: '+r[c.Officer-1]+'\nSite: '+site+'\nTopic: '+r[c.Topic-1]+'\nReviewer note: '+r[c.ReviewNote-1]+'\nFile: '+(link||r[c.Photo-1]||r[c.Video-1]),owner);
+    var t=e1Task_(list,key,body); up.getRange(i+1,c.ClickUpTask).setValue(t.id);
+  }
+  var rp=ss.getSheetByName('Reports'),rc=cols_(rp),rv=rp.getDataRange().getValues();
+  for(var j=1;j<rv.length;j++) {
+    var q=rv[j]; if(!q[rc.ReportID-1]||q[rc.SubmittedAt-1]) continue;
+    var sd=q[rc.ShiftDate-1]; if(!(sd instanceof Date)||Date.now()-sd.getTime()<=36*3600000) continue;
+    var site=q[rc.Site-1],list=L.daily[site]||L.followups;
+    if(q[rc.ClickUpTask-1]) continue;
+    var owner=e1Owner_(site,q[rc.Officer-1],true);
+    var t=e1Task_(list,'late-report-'+q[rc.ReportID-1],e1TaskBody_('Report not submitted: '+q[rc.Officer-1]+' '+Utilities.formatDate(sd,TZ,'yyyy-MM-dd'),'Site: '+site+'\nFollow up with the officer and ask them to submit their report in Engagement Capture.',owner));
+    rp.getRange(j+1,rc.ClickUpTask).setValue(t.id);
+  }
+}
+
+
+/* ----------------------------------------- MAINTENANCE (schema changes) */
+function removeCols_(sheetName, names) {
+  var sh = ss_().getSheetByName(sheetName); var c = cols_(sh);
+  names.map(function (n) { return c[n]; }).filter(Boolean).sort(function (a, b) { return b - a; })
+    .forEach(function (i) { sh.deleteColumn(i); });
+}
+function stepRevert_() {
+  var fb = ss_().getSheetByName('Feedback'); var c = cols_(fb);
+  for (var r = fb.getLastRow(); r >= 2; r--) { if (String(fb.getRange(r, c.Source).getValue()).indexOf('Meet:') === 0) fb.deleteRow(r); }
+  removeCols_('Feedback', ['Status', 'Source', 'Title']);
+  removeCols_('Uploads', ['Place', 'MapLink', 'UsedInFinal', 'ClickUpTask']);
+  removeCols_('Reports', ['ClickUpTask']);
+  props_().setProperty('PAUSED', 'yes');
+  props_().deleteProperty('MEET_SINCE');
+}
+function stepFeedback_() { cols_(ss_().getSheetByName('Feedback'), ['Status', 'Source', 'Title']); }
+function stepUploads_() { cols_(ss_().getSheetByName('Uploads'), ['Place', 'MapLink', 'UsedInFinal', 'ClickUpTask']); }
+function stepReports_() { cols_(ss_().getSheetByName('Reports'), ['ClickUpTask']); }
+function resume_() { props_().deleteProperty('PAUSED'); setup(); runAll_(); }
+
+
+/* --------------------------------------------------- GROUP (BULK) UPLOAD */
+// Officers upload many photos/videos at once into  E1CX Experience › SITE › Bulk upload
+// (Google Drive app: open the folder, tap +, Upload, select many). Every 10 minutes each file is
+// renamed SITE_YYYYMMDD_na_NN, moved into the dated shift folder and added to the app as
+// "Needs details": the officer then opens it in the app, picks the topic and ticks consent.
+var ROOT_ID = '1U-cZodmbBU6R7cFwp0p4Ily2_KPhPiSN';
+var BULK = 'Bulk upload';
+var SITE_TZ = { TOR: 'America/Toronto', SMR: 'America/Bogota' }; // everything else = Philippines
+
+function rows_(sh) {
+  var v = sh.getDataRange().getValues(); var h = v.shift();
+  return v.map(function (r) { var o = {}; h.forEach(function (k, i) { o[k] = r[i]; }); return o; });
+}
+function child_(parent, name) { var it = parent.getFoldersByName(name); return it.hasNext() ? it.next() : parent.createFolder(name); }
+
+/** Creates SITE › Bulk upload folders and writes their links into Sites › BulkFolder. */
+function setupBulk_() {
+  var st = ss_().getSheetByName('Sites'); var c = cols_(st, ['BulkFolder']);
+  var root = DriveApp.getFolderById(ROOT_ID);
+  var n = st.getLastRow() - 1; if (n < 1) return;
+  var v = st.getRange(2, 1, n, st.getLastColumn()).getValues();
+  for (var i = 0; i < n; i++) {
+    if (!v[i][c.FolderName - 1]) continue;
+    var b = child_(child_(root, v[i][c.FolderName - 1]), BULK);
+    st.getRange(i + 2, c.BulkFolder).setValue(b.getUrl());
+  }
+  return 'bulk folders ready';
+}
+
+function siteTz_(code) { return SITE_TZ[code] || 'Asia/Manila'; }
+
+/** Same rule as the app: local date for TOR/SMR; PH date shifted back before the PH shift start. */
+function shiftDate_(code, when, shiftRow) {
+  var tz = siteTz_(code);
+  if (SITE_TZ[code]) return Utilities.formatDate(when, tz, 'yyyy-MM-dd');
+  var summer = Utilities.formatDate(when, 'America/Toronto', 'Z') === '-0400';
+  var start = shiftRow ? Number(summer ? shiftRow.PHStartSummer : shiftRow.PHStartWinter) : 0;
+  var hour = Number(Utilities.formatDate(when, tz, 'H'));
+  var d = (hour < start) ? new Date(when.getTime() - 864e5) : when;
+  return Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+}
+
+/** Photo time and GPS from the file (needs the Drive advanced service; falls back to upload time). */
+function mediaMeta_(id, tz) {
+  try {
+    var m = Drive.Files.get(id, { fields: 'imageMediaMetadata(time,location)' });
+    var im = m.imageMediaMetadata || {}; var out = {};
+    if (im.location && im.location.latitude != null)
+      out.loc = Number(im.location.latitude).toFixed(6) + ', ' + Number(im.location.longitude).toFixed(6);
+    if (im.time) { try { out.time = Utilities.parseDate(im.time, tz, 'yyyy:MM:dd HH:mm:ss'); } catch (e) {} }
+    return out;
+  } catch (e) { return {}; }
+}
+
+function processBulk_() {
+  var ss = ss_(); var root = DriveApp.getFolderById(ROOT_ID);
+  var people = rows_(ss.getSheetByName('People'));
+  var sites = rows_(ss.getSheetByName('Sites'));
+  var shifts = rows_(ss.getSheetByName('Shifts'));
+  var up = ss.getSheetByName('Uploads'); var c = cols_(up);
+  var ids = up.getLastRow() > 1 ? up.getRange(2, c.UploadID, up.getLastRow() - 1, 1).getValues().map(function (r) { return String(r[0]); }) : [];
+  var t0 = Date.now();
+  sites.forEach(function (s) {
+    if (!s.FolderName) return;
+    var sfIt = root.getFoldersByName(s.FolderName); if (!sfIt.hasNext()) return; var sf = sfIt.next();
+    var bIt = sf.getFoldersByName(BULK); if (!bIt.hasNext()) return;
+    var files = bIt.next().getFiles();
+    while (files.hasNext() && Date.now() - t0 < 240000) {
+      var f = files.next(); var mime = f.getMimeType();
+      var isVideo = mime.indexOf('video/') === 0, isPhoto = mime.indexOf('image/') === 0;
+      if (!isVideo && !isPhoto) continue;
+      var owner = ''; try { owner = f.getOwner().getEmail(); } catch (e) {}
+      var p = people.filter(function (x) { return String(x.Email).toLowerCase() === owner.toLowerCase(); })[0];
+      if (!p) continue; // only people listed in the app
+      var tz = siteTz_(s.Code);
+      var meta = mediaMeta_(f.getId(), tz);
+      var when = meta.time || f.getDateCreated();
+      var shiftName = p.Shift || 'Peak';
+      var ymd = shiftDate_(s.Code, when, shifts.filter(function (x) { return x.Shift === shiftName; })[0]);
+      var prefix = s.Code + '_' + ymd.replace(/-/g, '') + '_na_';
+      var nn = ids.filter(function (x) { return x.indexOf(prefix) === 0; }).length + 1;
+      var id = prefix + String(nn).padStart(2, '0');
+      while (ids.indexOf(id) >= 0) { nn++; id = prefix + String(nn).padStart(2, '0'); }
+      var ext = (f.getName().match(/\.([A-Za-z0-9]+)$/) || [, isVideo ? 'mp4' : 'jpg'])[1].toLowerCase();
+      var name = id + '.' + (isVideo ? 'Video' : 'Photo') + '.bulk.' + ext;
+      var dest = child_(child_(sf, ymd), shiftName);
+      f.moveTo(dest); f.setName(name);
+      var path = s.FolderName + '/' + ymd + '/' + shiftName + '/' + name;
+      var dp = ymd.split('-');
+      var row = new Array(up.getLastColumn()).fill('');
+      function put(k, v) { if (c[k]) row[c[k] - 1] = v; }
+      put('UploadID', id); put('Officer', owner); put('Site', s.SiteName); put('Shift', shiftName);
+      put('Mode', 'Daily'); put('ShiftDate', new Date(Number(dp[0]), Number(dp[1]) - 1, Number(dp[2])));
+      put('Topic', 'N/A'); put('MediaType', isVideo ? 'Video' : 'Photo');
+      put(isVideo ? 'Video' : 'Photo', path); put('CapturedAt', when); put('Location', meta.loc || '');
+      put('Note', 'Group upload: add topic, note and consent'); put('ConsentSigned', false);
+      put('NothingConfidential', false); put('TopPick', false); put('FileName', id);
+      put('UploadedAt', f.getDateCreated()); put('Late', false); put('ReviewStatus', 'Pending');
+      up.appendRow(row); ids.push(id);
+    }
+  });
+}
+
+/* ------------------------------------------- ONE-OFF: remove a Meet draft */
+function removeHiringDraft_() {
+  var fb = ss_().getSheetByName('Feedback'); var c = cols_(fb); var gone = 0;
+  for (var r = fb.getLastRow(); r >= 2; r--) {
+    var src = String(fb.getRange(r, c.Source).getValue()), st = fb.getRange(r, c.Status).getValue();
+    var title = String(fb.getRange(r, c.Title).getValue());
+    if (src.indexOf('Meet:') === 0 && st === 'Draft' && /engagement and marketing/i.test(title)) { fb.deleteRow(r); gone++; }
+  }
+  return gone + ' draft(s) removed';
+}
+
+
+/* ------------------------------------------------------------ USER MANUAL */
+// The manual is a Google Doc (edit it there). Run makeManualPdf after editing to refresh the PDF + links.
+var MANUAL_DOC_ID = '1zF9EINRXaZdv2HsLkKQpSEXHDwaA6XKmSAvitbLxTRQ';
+function makeManualPdf_() {
+  var doc = DocumentApp.openById(MANUAL_DOC_ID); var body = doc.getBody();
+  if (body.getImages().length === 0) {
+    var it = DriveApp.getFolderById('1aoM0x0-XD2EEuuk0Ko8-VrLa-_ZAmqh6').getFilesByName('E1 app icon.png');
+    if (it.hasNext()) {
+      var img = body.insertImage(0, it.next().getBlob()); img.setWidth(110).setHeight(110);
+      img.getParent().asParagraph().setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+    }
+  }
+  doc.saveAndClose();
+  var root = DriveApp.getFolderById(ROOT_ID);
+  var name = 'E1 Engagement Capture - User Manual.pdf';
+  var old = root.getFilesByName(name); while (old.hasNext()) old.next().setTrashed(true);
+  var pdf = root.createFile(DriveApp.getFileById(MANUAL_DOC_ID).getAs('application/pdf')).setName(name);
+  props_().setProperty(MANUAL_URL_PROP, pdf.getUrl());
+  var m = ss_().getSheetByName('Manual');
+  m.getRange('A3').setFormula('=HYPERLINK("' + pdf.getUrl() + '","Open the user manual (PDF)")');
+  m.getRange('A4').setFormula('=HYPERLINK("https://docs.google.com/document/d/' + MANUAL_DOC_ID + '/edit","Edit the manual (Google Doc), then run makeManualPdf in the automation script to refresh the PDF")');
+  return pdf.getUrl();
+}
+
+/** One-time after approval: bulk folders, remove the hiring draft, manual PDF. */
+function finishSetup_() {
+  var out = [setupBulk_(), removeHiringDraft_(), makeManualPdf_()];
+  console.log(out.join(' | '));
+  return out;
+}
+
+
+/* ClickUp safety lock: the app may only touch the Engagement space.
+   Any call outside it (other spaces, lists, tasks, docs, chat) is refused, even though the token is a personal one. */
+var CU_OK_TASKS = [];
+function cuGuard_(path, method) {
+  method=method||'get';
+  if(method==='get'&&['user','team','space/'+E1_SPACE+'/folder?archived=false'].indexOf(path)>=0) return;
+  var allowed=['1300380000010216','1300380000010219','1300380000009892','1300380000010224','1300380000010227','1300380000009890','1300380000010217','1300380000010220','1300380000010222','1300380000010226','1300380000011273'];
+  var m=path.match(/^list\/([0-9]+)\/task(?:\?|$)/);
+  if(m&&allowed.indexOf(m[1])>=0&&['get','post'].indexOf(method)>=0) return;
+  var t=path.match(/^task\/([a-zA-Z0-9_-]+)(\/comment)?(?:\?|$)/);
+  if(t&&E1_TASKS[t[1]]&&allowed.indexOf(E1_TASKS[t[1]])>=0&&((t[2]&&['get','post'].indexOf(method)>=0)||(!t[2]&&['get','put'].indexOf(method)>=0))) return;
+  throw new Error('ClickUp access blocked outside verified Engagement resources.');
+}
+
+/** One-off: delete Meet drafts created by the Oct 23 test so they can be re-checked with the stricter rules. */
+function clearMeetTestDrafts_() {
+  var fb = ss_().getSheetByName('Feedback'); var c = cols_(fb); var gone = 0;
+  for (var r = fb.getLastRow(); r >= 2; r--) {
+    if (String(fb.getRange(r, c.Source).getValue()).indexOf('Meet:') === 0 && fb.getRange(r, c.Status).getValue() === 'Draft') { fb.deleteRow(r); gone++; }
+  }
+  return gone + ' removed; ' + testMeetNotes_();
+}
+
+/** One-off: switch the data sheet to Toronto time and refresh ClickUp directions with the due-date rule. */
+function applyTzAndDueDates_() {
+  var ss = ss_(); var before = ss.getSpreadsheetTimeZone(); ss.setSpreadsheetTimeZone(TZ);
+  clickupPullDirections_();
+  return 'time zone ' + before + ' -> ' + ss.getSpreadsheetTimeZone();
+}
+
+/** One-off: bring the manual's meeting-notes and ClickUp sections up to date, then refresh the PDF. */
+function updateManualOct23_() {
+  var body = DocumentApp.openById(MANUAL_DOC_ID).getBody();
+  body.replaceText('Only meetings whose title contains.*never imported\\.',
+    'All Google Meet notes are checked. Team meetings (title contains team brief, huddle, town hall, all hands or officers briefing) bring in their summary and next steps. Any other meeting brings in only the lines about engagement (events, recognition, filming and content, social media, morale, site activities) that are for the team or someone in the app; a line naming a site goes to that site. Hiring, pay, interviews, suspensions, absences, budgets, clients and HR matters are always left out, and leadership meetings (website, BRD, capacity, finance, sales, HR) are skipped. Everything still arrives as a Draft for a lead to check.');
+  body.replaceText("appear on that site's Today screen",
+    "appear on that site's Today screen on the day they are due (straight away if they have no due date), and again each time a recurring task comes round");
+  DocumentApp.openById(MANUAL_DOC_ID).saveAndClose();
+  return makeManualPdf_();
+}
+
+/** One-off: the padlock symbol was garbled in the manual; replace it with a word. */
+function fixManualPadlock_() {
+  var body = DocumentApp.openById(MANUAL_DOC_ID).getBody();
+  body.replaceText('\u00f0[^\\s]*', 'Padlock');
+  DocumentApp.openById(MANUAL_DOC_ID).saveAndClose();
+  return makeManualPdf_();
+}
+
+/** Oct 23: remove all Meet-note drafts (import switched off). Published messages are not touched. */
+function removeMeetDrafts_() {
+  var fb = ss_().getSheetByName('Feedback'); var c = cols_(fb); var gone = 0;
+  for (var r = fb.getLastRow(); r >= 2; r--) {
+    if (String(fb.getRange(r, c.Source).getValue()).indexOf('Meet:') === 0 && fb.getRange(r, c.Status).getValue() === 'Draft') { fb.deleteRow(r); gone++; }
+  }
+  props_().deleteProperty('MEET_SINCE');
+  console.log(gone + ' Meet draft(s) removed');
+  return gone;
+}
+
+
+/* ------------------------------------------------ HAND-OVER TO THE APP ACCOUNT */
+// Run takeOver_() while signed in as the app account (e1-app@empireonecx.com): it creates the 10-minute
+// trigger under that account and reports who is running it. Then run stopMyTrigger_() as the previous
+// owner so the old trigger stops (only one account should run the automation).
+function takeOver_() {
+  setup();
+  var me = Session.getEffectiveUser().getEmail();
+  props_().setProperty('RUN_AS', me);
+  console.log('Automation now runs as ' + me + '. ClickUp token set: ' + !!props_().getProperty('CLICKUP_TOKEN'));
+  return me;
+}
+function stopMyTrigger_() {
+  var n = 0;
+  ScriptApp.getProjectTriggers().forEach(function (t) { if (t.getHandlerFunction() === 'runAll') { ScriptApp.deleteTrigger(t); n++; } });
+  console.log(n + ' trigger(s) removed for ' + Session.getEffectiveUser().getEmail());
+  return n;
+}
+
+
+/* ------------------------------------------------------- GROUP UPLOAD PAGE */
+// Officers open this page from the app (Today > Upload many at once). They pick many photos/videos at once,
+// answer the questions once, star their top picks and press Upload. Each file is named and filed exactly like an
+// individual upload (SITE / YYYY-MM-DD / Shift, or SITE / Events / YYYY-MM-DD Event) and gets its own Uploads row.
+
+function guMe_() {
+  var email=String(Session.getActiveUser().getEmail()||'').toLowerCase();
+  if(!email) throw new Error('Google could not verify your signed-in work account. Open the app with your authorized EmpireOne account; contact Admin if this continues.');
+  var p=rows_(ss_().getSheetByName('People')).filter(function(x){return String(x.Email).toLowerCase()===email&&e1Active_(x);})[0];
+  if(!p) throw new Error('Your account is not active in Engagement Capture. Contact your Admin.');
+  return p;
+}
+function guContext() {
+  var p=guMe_(),ss=ss_(),sites=e1Sites_(p).map(function(s){return s.SiteName;}),topics=rows_(ss.getSheetByName('Topics')).map(function(t){return t.Topic;}).filter(String),shifts=rows_(ss.getSheetByName('Shifts')).map(function(s){return s.Shift;}).filter(function(s){return s&&s!=='Event';});
+  if(!sites.length) throw new Error('No site is assigned to your People profile. Ask Admin to set your site.');
+  return {email:p.Email,name:p.Name,role:p.Role,site:sites.indexOf(p.Site)>=0?p.Site:sites[0],shift:p.Shift||shifts[0],sites:sites,topics:topics,shifts:shifts,spots:['Production floor','Break room','Training room','Lobby','Outdoors','Other'],url:ScriptApp.getService().getUrl(),health:e1Health_()};
+}
+function guSite_(name) { return rows_(ss_().getSheetByName('Sites')).filter(function (s) { return s.SiteName === name; })[0]; }
+function guShiftDate_(s, shift, mode) {
+  var now = new Date();
+  if (mode === 'Event') return Utilities.formatDate(now, siteTz_(s.Code), 'yyyy-MM-dd');
+  var sh = rows_(ss_().getSheetByName('Shifts')).filter(function (x) { return x.Shift === shift; })[0];
+  return shiftDate_(s.Code, now, sh);
+}
+/** How many top picks this officer already has for this shift (or event), and the limit. */
+function guTopPickRoom(site, shift, mode, eventName) {
+  var p=guMe_(),s=e1Site_(p,site),ymd=guShiftDate_(s,shift,mode);
+  var used=rows_(ss_().getSheetByName('Uploads')).filter(function(u){
+    if(String(u.Officer).toLowerCase()!==String(p.Email).toLowerCase()||u.TopPick!==true||u.Site!==site) return false;
+    var d=u.ShiftDate instanceof Date?Utilities.formatDate(u.ShiftDate,TZ,'yyyy-MM-dd'):String(u.ShiftDate).slice(0,10);
+    if(d!==ymd) return false;
+    return mode==='Event'?u.Mode==='Event'&&String(u.EventName)===String(eventName):u.Mode!=='Event'&&u.Shift===shift;
+  }).length;
+  var limit=mode==='Event'?10:5; return {used:used,limit:limit,left:Math.max(0,limit-used)};
+}
+/** Saves one file (called once per file by the page) and adds its Uploads row. */
+function guUpload(f) {
+  var p=guMe_(),s=e1Site_(p,f.site);
+  if(f.consent!==true||f.noConf!==true) throw new Error('Confirm both consent checks.');
+  if(['Daily','Event'].indexOf(f.mode)<0) throw new Error('Invalid upload mode.');
+  var shifts=rows_(ss_().getSheetByName('Shifts')).map(function(x){return x.Shift;}); if(shifts.indexOf(f.shift)<0) throw new Error('Invalid shift.');
+  var topic=rows_(ss_().getSheetByName('Topics')).filter(function(x){return x.Topic===f.topic;})[0]; if(!topic) throw new Error('Choose a valid topic.');
+  var ev=e1Text_(f.eventName,100).trim(); if(f.mode==='Event'&&(!ev||/[\/\\\x00-\x1f]/.test(ev))) throw new Error('Enter an event name without slashes or control characters.');
+  if(!/^(image|video)\/[a-zA-Z0-9.+-]+$/.test(String(f.mime))||f.mime==='image/svg+xml') throw new Error('Upload a photo or video.');
+  if(!f.data||String(f.data).length>50*1024*1024) throw new Error('File exceeds the upload limit.');
+  var bytes=Utilities.base64Decode(f.data); if(bytes.length>35*1024*1024) throw new Error('File exceeds 35 MB.');
+  var req=String(f.requestId||''); if(!/^[a-zA-Z0-9_-]{16,100}$/.test(req)) throw new Error('Reload the upload page before sending this file.');
+  var key=String(p.Email).toLowerCase()+':'+req,lock=LockService.getScriptLock(); lock.waitLock(30000);
+  try {
+    var ledger=e1Sheet_('UploadRequests',['Key','UploadID','FileID','State','UpdatedAt','Payload']),lv=ledger.getDataRange().getValues(),rn=0,old;
+    for(var a=1;a<lv.length;a++) if(lv[a][0]===key){rn=a+1;old=lv[a];break;}
+    if(old&&old[3]==='Saved') return {id:old[1],top:JSON.parse(old[5]).top,folder:JSON.parse(old[5]).folder};
+    var up=ss_().getSheetByName('Uploads'),c=cols_(up),ids=up.getLastRow()>1?up.getRange(2,c.UploadID,up.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);}):[];
+    if(old) return e1FinishUpload_(ledger,rn,JSON.parse(old[5]),String(old[1]),up,c,bytes,f.mime);
+    var ymd=guShiftDate_(s,f.shift,f.mode),id=e1NextId_(s.Code+'_'+ymd.replace(/-/g,'')+'_'+topic.Code+'_',ids.concat(lv.slice(1).map(function(r){return String(r[1]);})));
+    var isVideo=/^video\//.test(f.mime),ext=(String(f.name).match(/\.([A-Za-z0-9]+)$/)||[,isVideo?'mp4':'jpg'])[1].toLowerCase();
+    var fileName=id+'.'+(isVideo?'Video':'Photo')+'.group.'+ext,sf=child_(DriveApp.getFolderById(ROOT_ID),s.FolderName);
+    var sub=f.mode==='Event'?'Events/'+ymd+' '+ev:ymd+'/'+f.shift,dest=f.mode==='Event'?child_(child_(sf,'Events'),ymd+' '+ev):child_(child_(sf,ymd),f.shift);
+    var top=!!f.top&&guTopPickRoom(f.site,f.shift,f.mode,ev).left>0,dp=ymd.split('-'),row=new Array(up.getLastColumn()).fill(''),dateCols=[];
+    function put(k,v){if(c[k]){row[c[k]-1]=typeof v==='string'?e1Cell_(v):v;if(v instanceof Date)dateCols.push(c[k]-1);}}
+    put('UploadID',id);put('Officer',p.Email);put('Site',f.site);put('Shift',f.shift);put('Mode',f.mode);put('EventName',f.mode==='Event'?ev:'');put('ShiftDate',new Date(Number(dp[0]),Number(dp[1])-1,Number(dp[2])));
+    put('Topic',f.topic);put('Spot',e1Text_(f.spot,100));put('MediaType',isVideo?'Video':'Photo');put(isVideo?'Video':'Photo',s.FolderName+'/'+sub+'/'+fileName);
+    var taken=f.taken?new Date(f.taken):new Date();if(isNaN(taken.getTime()))taken=new Date();put('CapturedAt',taken);put('Location',/^[-0-9.]+,\s*[-0-9.]+$/.test(String(f.loc))?String(f.loc):'');
+    put('Note',e1Text_(f.note));put('PeopleInShot',e1Text_(f.people,1000));put('ConsentSigned',true);put('NothingConfidential',true);put('TopPick',top);put('FileName',id);put('UploadedAt',new Date());put('Late',false);put('ReviewStatus','Pending');
+    var payload={row:row,dateCols:dateCols,top:top,folder:s.FolderName+' / '+sub,destId:dest.getId(),fileName:fileName};
+    ledger.appendRow([key,id,'','Reserved',new Date(),JSON.stringify(payload)]);rn=ledger.getLastRow();SpreadsheetApp.flush();
+    return e1FinishUpload_(ledger,rn,payload,id,up,c,bytes,f.mime);
+  } finally {lock.releaseLock();}
+}
+
+/** The Group Upload page (HTML + browser code). */
+function guHtml_() {
+  return String.raw`<!doctype html><html><head><base target="_top"><meta charset="utf-8">
+<style>
+body{font-family:Arial,sans-serif;margin:0;background:#fafaff;color:#222}
+header{background:linear-gradient(90deg,#7F3FFC,#1C63F8);color:#fff;padding:14px 16px;font-weight:bold;font-size:18px}
+main{padding:14px 16px;max-width:720px;margin:auto}
+label{display:block;font-weight:bold;margin:12px 0 4px;color:#09085F}
+select,input[type=text]{width:100%;box-sizing:border-box;padding:10px;border:1px solid #ccc;border-radius:8px;font-size:16px;background:#fff}
+.row{display:flex;gap:10px}.row>div{flex:1}
+.chk{display:flex;gap:8px;align-items:flex-start;margin:10px 0;font-size:15px}.chk input{width:22px;height:22px}
+.pick{display:block;text-align:center;padding:16px;border:2px dashed #5B4CFA;border-radius:10px;color:#5B4CFA;font-weight:bold;margin-top:14px;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:12px}
+.tile{position:relative;border-radius:8px;overflow:hidden;background:#000;aspect-ratio:1}
+.tile img,.tile video{width:100%;height:100%;object-fit:cover}
+.star{position:absolute;top:4px;right:4px;background:rgba(0,0,0,.55);color:#fff;border:0;border-radius:50%;width:38px;height:38px;font-size:20px}
+.star.on{background:#FFC107;color:#09085F}
+.rm{position:absolute;top:4px;left:4px;background:rgba(0,0,0,.55);color:#fff;border:0;border-radius:50%;width:30px;height:30px}
+.st{position:absolute;left:0;right:0;bottom:0;background:rgba(0,0,0,.65);color:#fff;font-size:12px;padding:3px 5px}
+button.go{width:100%;margin:18px 0 8px;padding:14px;background:#5B4CFA;color:#fff;border:0;border-radius:10px;font-size:17px;font-weight:bold}
+button.go:disabled{background:#aaa}
+.note{background:#F1EFFF;border-left:4px solid #5B4CFA;padding:8px 10px;border-radius:6px;font-size:14px;margin-top:10px}
+.err{color:#b00020;font-weight:bold}
+.bar{height:8px;background:#eee;border-radius:4px;overflow:hidden;margin-top:8px}.bar>div{height:100%;width:0;background:#5B4CFA}
+</style></head><body>
+<header>E1 Engagement Capture · Upload</header><main id="m">Loading...</main>
+<script src="https://cdn.jsdelivr.net/npm/exifr@7.1.3/dist/lite.umd.js"></script>
+<script>
+var C=null, FILES=[], LOC='', ROOM=null, MAXMB=35, BUSY=false;
+function el(id){return document.getElementById(id);}
+function esc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
+function opts(a,v){return a.map(function(x){return '<option'+(x===v?' selected':'')+'>'+esc(x)+'</option>';}).join('');}
+function fail(e){el('m').innerHTML='<p class="err">'+esc(e&&e.message?e.message:e)+'</p>';}
+google.script.run.withSuccessHandler(start).withFailureHandler(fail).guContext();
+function start(c){C=c; el('m').innerHTML='<a href="'+esc(c.url)+'">← Engagement Capture home</a>'+ 
+ '<p>Hi '+esc(c.name)+'. Choose all your photos and videos at once, answer these questions once, star your best shots, then press Upload. Each file is filed into its normal dated folder.</p>'+
+ '<div class="row"><div><label>Site</label><select id="site">'+opts(c.sites,c.site)+'</select></div><div><label>Shift</label><select id="shift">'+opts(c.shifts,c.shift)+'</select></div></div>'+
+ '<label>Mode</label><select id="mode"><option>Daily</option><option>Event</option></select>'+
+ '<div id="evw" style="display:none"><label>Event name</label><input type="text" id="ev" placeholder="Same name for every upload of this event"></div>'+
+ '<label>Topic</label><select id="topic"><option value="">Choose...</option>'+opts(c.topics,'')+'</select>'+
+ '<label>Spot</label><select id="spot"><option value="">Choose...</option>'+opts(c.spots,'')+'</select>'+
+ '<label>Note (for all files)</label><input type="text" id="note">'+
+ '<label>Who is in the shots</label><input type="text" id="people">'+
+ '<div class="chk"><input type="checkbox" id="consent"><span>Everyone shown has signed consent</span></div>'+
+ '<div class="chk"><input type="checkbox" id="noconf"><span>Nothing confidential is visible (screens, customer data, badges)</span></div>'+
+ '<label class="pick" for="files">+ Choose photos and videos</label><input type="file" id="files" multiple accept="image/*,video/*" style="display:none">'+
+ '<div class="note" id="room">Tap the star on your best shots.</div><div class="grid" id="grid"></div>'+
+ '<button class="go" id="go" disabled>Upload</button><div id="prog"></div>';
+ el('mode').onchange=function(){el('evw').style.display=this.value==='Event'?'':'none';room();};
+ el('site').onchange=room; el('shift').onchange=room; el('ev').onchange=room;
+ el('files').onchange=function(){add(this.files);this.value='';};
+ el('go').onclick=upload;
+ if(navigator.geolocation)navigator.geolocation.getCurrentPosition(function(p){LOC=p.coords.latitude.toFixed(6)+', '+p.coords.longitude.toFixed(6);},function(){},{enableHighAccuracy:true,timeout:15000});
+ room();}
+function stars(){return FILES.filter(function(f){return f.top&&!f.done;}).length;}
+function room(){google.script.run.withFailureHandler(function(e){el('room').textContent=e.message||e;ROOM=null;el('go').disabled=true;}).withSuccessHandler(function(r){ROOM=r;showRoom();}).guTopPickRoom(el('site').value,el('shift').value,el('mode').value,el('ev').value);}
+function showRoom(){var w=el('mode').value==='Event'?'event':'shift'; var left=FILES.filter(function(f){return !f.done;}).length;
+ if(ROOM)el('room').innerHTML='Tap the star on your best shots. You can star '+ROOM.left+' for this '+w+' (limit '+ROOM.limit+'). Starred now: '+stars()+'.';
+ el('go').disabled=BUSY||!left; el('go').textContent=left?('Upload '+left+' file'+(left>1?'s':'')):'Upload';}
+function add(list){for(var i=0;i<list.length;i++){var f=list[i]; if(f.size>MAXMB*1048576){alert(f.name+' is larger than '+MAXMB+' MB. Use "Large video (Drive link)" in the app for that one.');continue;} FILES.push({requestId:requestId(f),file:f,top:false,url:URL.createObjectURL(f),st:'',done:false});} draw();}
+function draw(){el('grid').innerHTML=FILES.map(function(f,i){var v=/^video/.test(f.file.type);
+ return '<div class="tile">'+(v?'<video src="'+f.url+'" muted playsinline></video>':'<img src="'+f.url+'">')+
+ '<button class="star'+(f.top?' on':'')+'" onclick="tog('+i+')">&#9733;</button>'+(f.done?'':'<button class="rm" onclick="rm('+i+')">&#10005;</button>')+
+ (f.st?'<div class="st">'+esc(f.st)+'</div>':'')+'</div>';}).join(''); showRoom();}
+function tog(i){if(BUSY||FILES[i].done)return; var f=FILES[i]; if(!f.top&&ROOM&&stars()>=ROOM.left){alert('You have reached your top-pick limit for this '+(el('mode').value==='Event'?'event':'shift')+'.');return;} f.top=!f.top; draw();}
+function rm(i){if(BUSY)return; URL.revokeObjectURL(FILES[i].url);FILES.splice(i,1); draw();}
+function b64(file){return new Promise(function(res,rej){var r=new FileReader();r.onload=function(){res(String(r.result).split(',')[1]);};r.onerror=rej;r.readAsDataURL(file);});}
+function call(fn,arg){return new Promise(function(res,rej){google.script.run.withSuccessHandler(res).withFailureHandler(rej)[fn](arg);});}
+async function meta(file){var o={taken:null,loc:''}; if(!/^image/.test(file.type)||!window.exifr)return o;
+ try{var g=await exifr.gps(file); if(g&&g.latitude!=null)o.loc=g.latitude.toFixed(6)+', '+g.longitude.toFixed(6);}catch(e){}
+ try{var t=await exifr.parse(file,['DateTimeOriginal']); if(t&&t.DateTimeOriginal)o.taken=new Date(t.DateTimeOriginal).toISOString();}catch(e){}
+ return o;}
+function requestId(f){var k='e1-upload:'+C.email+':'+f.name+':'+f.size+':'+f.lastModified;var id=sessionStorage.getItem(k);if(!id){id=crypto.randomUUID();sessionStorage.setItem(k,id);}return id;}
+async function upload(){
+ var need=[]; if(!el('topic').value)need.push('Topic'); if(el('mode').value==='Event'&&!el('ev').value.trim())need.push('Event name');
+ if(!el('consent').checked||!el('noconf').checked)need.push('both consent checks');
+ if(need.length){alert('Please complete: '+need.join(', '));return;}
+ BUSY=true; document.querySelectorAll('select,input').forEach(function(e){e.disabled=true;}); showRoom(); var ok=0,bad=0,todo=FILES.filter(function(f){return !f.done;}),n=0;
+ el('prog').innerHTML='<div class="bar"><div id="pb"></div></div><p id="pt"></p>';
+ for(var i=0;i<todo.length;i++){var f=todo[i]; n++; el('pt').textContent='Uploading '+n+' of '+todo.length+'...';
+  try{var m=await meta(f.file); var data=await b64(f.file);
+   var r=await call('guUpload',{requestId:f.requestId,site:el('site').value,shift:el('shift').value,mode:el('mode').value,eventName:el('ev').value,topic:el('topic').value,spot:el('spot').value,note:el('note').value,people:el('people').value,consent:true,noConf:true,top:f.top,name:f.file.name,mime:f.file.type||'image/jpeg',data:data,taken:m.taken,loc:m.loc||LOC});
+   f.done=true; f.st='Saved'+(r.top?' - top pick':''); ok++;}catch(e){f.st='Failed: '+(e&&e.message?e.message:'try again'); bad++;}
+  el('pb').style.width=Math.round(n/todo.length*100)+'%'; draw();}
+ BUSY=false; document.querySelectorAll('select,input').forEach(function(e){e.disabled=false;}); showRoom();
+ el('pt').innerHTML=ok+' saved'+(bad?', <span class="err">'+bad+' failed. Press Upload again to retry them.</span>':'. All done.')+' Refresh the app to see them in Library; they are now waiting for review.';
+ room();}
+</script></body></html>`;
+}
+
+
+/** TEST ONLY: sends 2 tiny images through the Group Upload path, checks them, then removes them. */
+function testGroupUpload_() {
+  var ctx = guContext(); var png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  var base = { site: ctx.sites[0].SiteName || ctx.sites[0], shift: 'Peak', mode: 'Daily', topic: ctx.topics[0].Topic || ctx.topics[0], spot: '', note: 'TEST group upload', people: '', consent: true, noConf: true, mime: 'image/png', data: png };
+  var out = [];
+  [true, false].forEach(function (top, i) { var f = JSON.parse(JSON.stringify(base)); f.name = 'test' + i + '.png'; f.top = top; out.push(guUpload(f)); });
+  console.log(JSON.stringify(out));
+  var up = ss_().getSheetByName('Uploads'); var c = cols_(up); var gone = 0;
+  for (var r = up.getLastRow(); r >= 2; r--) {
+    if (up.getRange(r, c.Note).getValue() !== 'TEST group upload') continue;
+    var path = String(up.getRange(r, c.Photo).getValue()); var nm = path.split('/').pop();
+    var it = DriveApp.getFilesByName(nm); var found = false;
+    while (it.hasNext()) { it.next().setTrashed(true); found = true; }
+    console.log(path + '  file found in Drive: ' + found);
+    up.deleteRow(r); gone++;
+  }
+  console.log(gone + ' test row(s) removed');
+}
+
+
+/** Oct 23: manual section 6 rewritten for the Group Upload page (the Bulk upload folder is no longer used). */
+function updateManualGroupUpload_() {
+  var doc = DocumentApp.openById(MANUAL_DOC_ID); var body = doc.getBody(); var T = DocumentApp.ElementType;
+  var start = -1, end = -1;
+  for (var i = 0; i < body.getNumChildren(); i++) {
+    var el = body.getChild(i); if (el.getType() !== T.PARAGRAPH && el.getType() !== T.LIST_ITEM) continue;
+    var t = el.asText().getText();
+    var head = el.getType() === T.PARAGRAPH && el.asParagraph().getHeading() !== DocumentApp.ParagraphHeading.NORMAL;
+    if (start < 0 && head && /^6\. Officer: group upload/.test(t)) { start = i; continue; }
+    if (start >= 0 && head && /^7\. Officer: events/.test(t)) { end = i; break; }
+  }
+  if (start < 0 || end < 0) throw new Error('Section 6 not found');
+  var pTpl = null, lTpl = null;
+  for (var j = start + 1; j < end; j++) {
+    var e = body.getChild(j);
+    if (!lTpl && e.getType() === T.LIST_ITEM) lTpl = e.copy();
+    if (!pTpl && e.getType() === T.PARAGRAPH && e.asText().getText()) pTpl = e.copy();
+  }
+  for (var k = end - 1; k > start; k--) body.removeChild(body.getChild(k));
+  var idx = start + 1;
+  function bold(el, words) { (words || []).forEach(function (w) { var r = el.findText(w.replace(/[.*+?^$()|[\]\\]/g, '\\$&')); if (r) r.getElement().asText().setBold(r.getStartOffset(), r.getEndOffsetInclusive(), true); }); }
+  function para(t, b) { var p = pTpl.copy(); p.asText().setText(t); p.asText().setBold(false); body.insertParagraph(idx++, p); bold(p, b); }
+  function li(t, b) { var l = lTpl.copy(); l.asText().setText(t); l.asText().setBold(false); body.insertListItem(idx++, l); bold(l, b); }
+  para('Use this when you have many photos or clips from the same shift or event. You answer the questions once, star your best shots, and every file is filed exactly as if you had uploaded it on its own: same name, same dated folder, straight to review.');
+  li('On Today, under Start here, tap Upload many at once (photos & videos). The E1 Group Upload page opens in your browser. If asked, sign in with your own EmpireOne account.', ['Upload many at once (photos & videos)']);
+  li('Check Site and Shift, choose Mode (Daily, or Event and type the Event name), then choose the Topic and Spot and add a note and who is in the shots. These answers apply to every file in this batch.', ['Site', 'Shift', 'Mode', 'Topic', 'Spot']);
+  li('Tick both checks: everyone shown has signed consent, and nothing confidential is visible.', ['consent', 'nothing confidential']);
+  li('Tap + Choose photos and videos and select them all (up to 35 MB each). Thumbnails appear; tap the cross on any you want to leave out.', ['+ Choose photos and videos']);
+  li('Tap the star on your best shots. The page shows how many top picks you have left (5 per shift, 10 per event).', ['star']);
+  li('Tap Upload. A progress bar shows each file. If any fail (for example on weak signal), press Upload again to retry just those.', ['Upload']);
+  li('Done. Each file is named SITE_YYYYMMDD_topic_NN, saved in SITE > YYYY-MM-DD > Shift (or the event folder), and appears in the app ready for review. Where the phone stored them, the time and GPS of each photo are used.', ['Done.']);
+  para('Tip: if some shots need a different topic or spot, send them as a second batch. For a video over 35 MB, use Large video (Drive link) in Capture.', ['Tip:']);
+  // other mentions of the old Bulk upload folder
+  body.replaceText(' For group upload, give them edit access to their site.s Bulk upload folder\.', '');
+  body.replaceText(', remove them from app sharing and from the Bulk upload folder\.', ' and remove them from app sharing.');
+  body.replaceText(' The automation creates its Bulk upload folder\.', '');
+  body.replaceText('place names and map links, Meet-note drafts, group uploads, and ClickUp when a token is set\.', 'place names and map links, and ClickUp when a token is set. The same project also runs the Group Upload page (Deploy > Manage deployments).');
+  body.replaceText('Wait 10 minutes and refresh\. Check you uploaded into your own site.s Bulk upload folder while signed in with your own account, and that the files are photos or videos\.', 'Files appear as soon as the page says saved; tap refresh in the app. If the page says you are not set up, ask the Admin to check your People row. If a file failed, press Upload again.');
+  body.replaceText('My group upload hasn.t appeared\.', 'My group upload failed or is missing.');
+  body.replaceText(' Group uploads use topic code "na"\.', ' Group uploads use the chosen topic and add "group" to the file name.');
+  body.replaceText(' Group upload drop folder: SITE / Bulk upload\.', ' Group uploads go to the same folders.');
+  body.replaceText(' Group uploads need consent before review\.', '');
+  body.replaceText('Version 1\.1 - October 2026', 'Version 1.2 - October 2026');
+  doc.saveAndClose();
+  return makeManualPdf_();
+}
+
+
+/** Check: which account runs the automation, and whether this account still has a trigger. */
+function whoRuns_() {
+  var p = props_();
+  var mine = ScriptApp.getProjectTriggers().filter(function (t) { return t.getHandlerFunction() === 'runAll'; }).length;
+  console.log('RUN_AS=' + (p.getProperty('RUN_AS') || '(not set)') + ' | me=' + Session.getEffectiveUser().getEmail() + ' | my runAll triggers=' + mine + ' | token set=' + !!p.getProperty('CLICKUP_TOKEN'));
+}
+
+// E1 Engagement v2: fixed workspace boundary, durable sync records and role checks.
+var E1_VERSION = '2.0.0';
+var E1_SPACE = '1300380000003391';
+var E1_ADMIN = 'engagement@empireonecx.com'; // app account: owns the sync, deployments and ClickUp link
+var E1_TASKS = {};
+var E1_LISTS = null;
+var E1_MEMBERS = null;
+var E1_DEADLINE = 0;
+function e1Text_(s, max) { return String(s == null ? '' : s).slice(0, max || 4000); }
+function e1Cell_(s) { s = String(s == null ? '' : s); return /^[=+@-]/.test(s) ? "'" + s : s; }
+function e1Active_(p) { return String(p.Active).toUpperCase() === 'TRUE'; }
+function e1Wide_(p) { return ['Admin', 'Engagement Lead'].indexOf(String(p.Role)) >= 0; }
+function e1Review_(p) { return e1Wide_(p) || p.Role === 'Site Manager'; }
+function e1Sites_(p) { return rows_(ss_().getSheetByName('Sites')).filter(function(s) { return s.SiteName && (e1Wide_(p) || s.SiteName === p.Site); }); }
+function e1Site_(p, name) { var s = e1Sites_(p).filter(function(x) { return x.SiteName === name; })[0]; if (!s) throw new Error('Your account is not assigned to this site. Ask an Admin to update People.'); return s; }
+function e1Admin_() { var p = guMe_(); if (p.Role !== 'Admin') throw new Error('Admin access required.'); return p; }
+function e1Within_() { if (E1_DEADLINE && Date.now() > E1_DEADLINE) throw new Error('Sync time budget reached; remaining work will resume next cycle.'); }
+function e1Sheet_(name, headers) {
+  var ss = ss_(), sh = ss.getSheetByName(name);
+  if (!sh) { sh = ss.insertSheet(name); sh.getRange(1, 1, 1, headers.length).setValues([headers]).setFontWeight('bold'); sh.setFrozenRows(1); }
+  return sh;
+}
+function e1Ledger_() { return e1Sheet_('SyncLedger', ['Key', 'ListID', 'TaskID', 'State', 'UpdatedAt', 'Error']); }
+function e1Log_(stage, state, note) {
+  var sh = e1Sheet_('SyncLog', ['Time', 'Stage', 'State', 'Detail']);
+  sh.appendRow([new Date(), stage, state, e1Cell_(e1Text_(note, 1000))]);
+  if (sh.getLastRow() > 1001) sh.deleteRows(2, sh.getLastRow() - 1001);
+  props_().setProperty('E1_' + stage.toUpperCase(), JSON.stringify({at:new Date().toISOString(), state:state, detail:e1Text_(note, 500)}));
+}
+function e1ListTasks_(id, includeClosed) {
+  var all = [], page = 0, data;
+  do {
+    e1Within_(); data = cu_('list/' + id + '/task?archived=false&include_closed=' + !!includeClosed + '&subtasks=true&include_timl=true&page=' + page);
+    (data.tasks || []).forEach(function(t) { E1_TASKS[String(t.id)] = String(id); all.push(t); });
+    page++;
+    if (page > 1000) throw new Error('Unexpected ClickUp pagination size.');
+  } while (data.last_page === false || (data.last_page == null && (data.tasks || []).length === 100));
+  return all;
+}
+function e1Members_() {
+  if (E1_MEMBERS) return E1_MEMBERS;
+  var team = (cu_('team').teams || []).filter(function(t) { return String(t.id) === CU_TEAM; })[0];
+  if (!team) throw new Error('ClickUp token cannot access EmpireOne workspace ' + CU_TEAM);
+  E1_MEMBERS = {};
+  (team.members || []).forEach(function(m) { var u = m.user || m; if (u.email) E1_MEMBERS[String(u.email).toLowerCase()] = Number(u.id); });
+  return E1_MEMBERS;
+}
+function e1Owner_(site, email, manager) {
+  var people = rows_(ss_().getSheetByName('People')).filter(e1Active_), members = e1Members_();
+  var target = manager ? people.filter(function(p) { return p.Site === site && p.Role === 'Site Manager'; })[0] : null;
+  var intended = String(target ? target.Email : email || '').toLowerCase();
+  var lead = people.filter(function(p) { return p.Role === 'Engagement Lead'; })[0];
+  var id = members[intended] || (lead && members[String(lead.Email).toLowerCase()]) || members[E1_ADMIN];
+  if (!id) throw new Error('No verified ClickUp owner available for ' + site);
+  return {id:id, intended:intended, fallback:!members[intended]};
+}
+function e1Task_(list, key, body) {
+  var sh = e1Ledger_(), v = sh.getDataRange().getValues(), row = 0, old;
+  for (var i = 1; i < v.length; i++) if (v[i][0] === key) { row = i + 1; old = v[i]; break; }
+  if (old && old[2]) { E1_TASKS[String(old[2])] = String(list); return {id:String(old[2]), url:'https://app.clickup.com/t/' + old[2]}; }
+  // Reconcile before retrying an unknown POST outcome. Never blindly retry a write.
+  var marker = '[E1-SYNC:' + key + ']';
+  var found = e1ListTasks_(list, true).filter(function(t) { return String(t.description || t.text_content || '').indexOf(marker) >= 0; })[0];
+  if (!row) { sh.appendRow([key, list, '', 'Pending', new Date(), '']); row = sh.getLastRow(); }
+  if (!found && old && ['Posting','Uncertain'].indexOf(String(old[3])) >= 0) {
+    throw new Error('Uncertain ClickUp creation requires Admin reconciliation: ' + key);
+  }
+  if (!found) {
+    body.description = e1Text_(body.description, 12000) + '\n\n' + marker;
+    body.notify_all = false;
+    sh.getRange(row, 4, 1, 3).setValues([['Posting', new Date(), '']]); SpreadsheetApp.flush();
+    try { found = cu_('list/' + list + '/task', 'post', body); }
+    catch (e) { sh.getRange(row, 4, 1, 3).setValues([['Uncertain', new Date(), e1Cell_(e1Text_(e.message, 500))]]); throw e; }
+  }
+  E1_TASKS[String(found.id)] = String(list);
+  sh.getRange(row, 3, 1, 4).setValues([[String(found.id), 'Created', new Date(), '']]);
+  return found;
+}
+function e1TaskBody_(name, description, owner, due) {
+  return {name:e1Text_(name, 200), description:description + (owner.fallback ? '\nAssigned to workspace Admin because the intended owner has no matching ClickUp membership: ' + owner.intended : ''), assignees:[owner.id], due_date:due || Date.now() + 86400000, due_date_time:true, tags:['from-app']};
+}
+function e1Tags_(t) { return (t.tags || []).map(function(x) { return String(x.name).toLowerCase(); }); }
+function e1Test_(t) { return /\btest\b|dummy|duplicate me|reusable intake/i.test(t.name) || e1Tags_(t).indexOf('test') >= 0; }
+function e1Eligible_(t, today, tz) {
+  var status = String((t.status || {}).status || t.status || '').toLowerCase(), tags = e1Tags_(t);
+  if (e1Test_(t) || tags.indexOf('from-app') >= 0) return false;
+  if (['idea','draft','done','reported','completed','closed','cancelled'].indexOf(status) >= 0) return false;
+  var approved = ['approved','ready','in progress','to do'].indexOf(status) >= 0 || tags.indexOf('publish') >= 0;
+  if (!approved) return false;
+  return !t.due_date || Utilities.formatDate(new Date(Number(t.due_date)), tz, 'yyyy-MM-dd') <= today;
+}
+function e1Field_(t, name) { var f = (t.custom_fields || []).filter(function(x) { return x.name === name; })[0]; return f ? f.value : null; }
+function e1EventOwner_(t, site) {
+  var ids = (t.assignees || []).map(function(x) { return Number(x.id); });
+  var own = e1Field_(t, 'Owner'); if (!ids.length && Array.isArray(own)) ids = own.map(function(x) { return Number(x.id || x); });
+  return ids.length ? {id:ids[0], intended:'event owner', fallback:false} : e1Owner_(site, '', true);
+}
+function clickupEventFlows_() {
+  var L = cuLists_(), now = Date.now();
+  Object.keys(L.events).forEach(function(site) {
+    e1ListTasks_(L.events[site], true).forEach(function(t) {
+      if (e1Test_(t) || e1Tags_(t).indexOf('from-app') >= 0) return;
+      var status = String((t.status || {}).status || '').toLowerCase(), dt = Number(e1Field_(t, 'Event Date') || t.due_date);
+      if (!dt || !isFinite(dt) || ['idea','planned','cancelled'].indexOf(status) >= 0) return;
+      var owner = e1EventOwner_(t, site), url = t.url || 'https://app.clickup.com/t/' + t.id;
+      if (['approved','ready'].indexOf(status) >= 0 && now >= dt - 86400000 && now < dt) {
+        var reminder = e1Task_(L.daily[site], 'reminder-' + t.id, e1TaskBody_('Event tomorrow: ' + t.name, 'Check final preparations.\nSource event: ' + url, owner, dt));
+        cu_('task/'+reminder.id,'put',{due_date:dt,due_date_time:true});
+      }
+      if (['done','reported','completed'].indexOf(status) >= 0) {
+        var drive = e1Field_(t, 'Google Drive Link');
+        if (drive) e1Task_(L.content, 'event-content-' + t.id, Object.assign(e1TaskBody_('Event content: ' + t.name, 'Source event: ' + url + '\nApproved media: ' + drive + '\nSite: ' + site, e1Owner_(site, '', false), now + 86400000), {custom_fields:[{id:'46249f90-69dc-4d78-b97a-080234c12ee4',value:url},{id:'23771b86-b4d7-4719-9486-781d41503bff',value:drive}]}));
+        if (status === 'done') e1Task_(L.daily[site], 'event-report-' + t.id, e1TaskBody_('Post-event report: ' + t.name, 'Complete the report and update the original event to Reported.\nSource event: ' + url + '\nDue 48 hours after event time.', owner, dt + 48 * 3600000));
+      }
+    });
+  });
+}
+function e1NextId_(prefix, ids) {
+  var max = 0;
+  ids.forEach(function(id) { if (String(id).indexOf(prefix) === 0) { var n = Number(String(id).slice(prefix.length)); if (Number.isSafeInteger(n)) max = Math.max(max,n); } });
+  return prefix + String(max + 1).padStart(2,'0');
+}
+function e1FinishUpload_(ledger,rn,payload,id,up,c,bytes,mime) {
+  var dest=DriveApp.getFolderById(payload.destId),matches=dest.getFilesByName(payload.fileName);
+  var file=matches.hasNext()?matches.next():dest.createFile(Utilities.newBlob(bytes,mime,payload.fileName));
+  payload.row[c.DriveLink-1]=file.getUrl();
+  ledger.getRange(rn,3,1,4).setValues([[file.getId(),'File saved',new Date(),JSON.stringify(payload)]]);SpreadsheetApp.flush();
+  var ids=up.getLastRow()>1?up.getRange(2,c.UploadID,up.getLastRow()-1,1).getValues().map(function(r){return String(r[0]);}):[];
+  if(ids.indexOf(id)<0)up.appendRow(payload.row.map(function(v,i){return payload.dateCols.indexOf(i)>=0&&v?new Date(v):v;}));
+  ledger.getRange(rn,4).setValue('Saved');
+  return {id:id,top:payload.top,folder:payload.folder};
+}
+function e1FileFromPath_(path) {
+  var pieces = String(path || '').split('/'), root = DriveApp.getFolderById(ROOT_ID);
+  if (pieces.length < 2) return null;
+  var name = pieces.pop();
+  for (var i = 0; i < pieces.length; i++) { var it = root.getFoldersByName(pieces[i]); if (!it.hasNext()) return null; root = it.next(); }
+  var files = root.getFilesByName(name); return files.hasNext() ? files.next() : null;
+}
+function e1Health_() {
+  return {version:E1_VERSION, workspace:CU_TEAM, space:E1_SPACE, spaceName:'Engagement', runner:props_().getProperty('RUN_AS') || '', paused:!!props_().getProperty('PAUSED'), lastSync:props_().getProperty('E1_LAST_SYNC') || '', syncState:props_().getProperty('E1_SYNC_STATE') || 'Not run', stages:['places','directions','followups','events'].map(function(k) { try { return Object.assign({name:k}, JSON.parse(props_().getProperty('E1_'+k.toUpperCase()) || '{}')); } catch(e) { return {name:k,state:'Unknown'}; } })};
+}
+function e1Bootstrap() {
+  e1Admin_();
+  // Run explicitly from the editor as the account that owns the live deployment.
+  if (Session.getEffectiveUser().getEmail().toLowerCase() !== E1_ADMIN) throw new Error('Bootstrap must run as ' + E1_ADMIN);
+  props_().setProperty('RUN_AS', E1_ADMIN); props_().deleteProperty('PAUSED');
+  setup(); e1Ledger_(); e1Sheet_('SyncLog',['Time','Stage','State','Detail']);
+  props_().deleteProperty('CU_LISTS'); var L = cuLists_(); var members = e1Members_();
+  if (!members[E1_ADMIN]) throw new Error('Admin ClickUp membership could not be verified.');
+  runAll_(); console.log(JSON.stringify({version:E1_VERSION,lists:L,health:e1Health_()}));
+}
+function e1Verify() {
+  e1Admin_();
+  var L = cuLists_(), members = e1Members_(), counts = {};
+  Object.keys(L.daily).forEach(function(site) { counts[site] = e1ListTasks_(L.daily[site],true).length; });
+  console.log(JSON.stringify({version:E1_VERSION,workspace:CU_TEAM,space:E1_SPACE,adminMember:!!members[E1_ADMIN],dailyTasks:counts,health:e1Health_(),myTriggers:ScriptApp.getProjectTriggers().filter(function(t){return ['runAll','runAll_'].indexOf(t.getHandlerFunction())>=0;}).length}));
+}
+
+function e1Ack_(tid,feedbackId,reply) {
+  var key='ack-'+feedbackId,sh=e1Ledger_(),v=sh.getDataRange().getValues(),rn=0,old;
+  for(var i=1;i<v.length;i++)if(v[i][0]===key){rn=i+1;old=v[i];break;}
+  if(old&&old[3]==='Commented')return;
+  var marker='[E1-ACK:'+feedbackId+']',comments=cu_('task/'+tid+'/comment').comments||[];
+  var exists=comments.some(function(c){return String(c.comment_text||JSON.stringify(c.comment||[])).indexOf(marker)>=0;});
+  if(!rn){sh.appendRow([key,E1_TASKS[tid],tid,'Pending',new Date(),'']);rn=sh.getLastRow();}
+  if(!exists&&old&&old[3]==='Uncertain')throw new Error('Uncertain acknowledgment needs Admin reconciliation: '+feedbackId);
+  if(!exists){
+    sh.getRange(rn,4).setValue('Uncertain');SpreadsheetApp.flush();
+    cu_('task/'+tid+'/comment','post',{comment_text:'Read in E1 Engagement Capture'+(reply?': '+reply:'')+'\n'+marker,notify_all:false});
+  }
+  sh.getRange(rn,4,1,2).setValues([['Commented',new Date()]]);
+}
+function e1Visible_(p,row) { return e1Wide_(p)||p.Role==='Creative Designer'||p.Role==='Site Manager'||row.Site===p.Site; }
+function e1Json_(value) { return JSON.parse(JSON.stringify(value)); }
+function appData() {
+  var p=guMe_(),ss=ss_(),context=guContext(),now=Date.now();
+  var messages=rows_(ss.getSheetByName('Feedback')).filter(function(r){
+    var addressed=r.ToAll===true||r.ToSite===p.Site||String(r.ToPerson).toLowerCase()===String(p.Email).toLowerCase();
+    return e1Wide_(p)||(r.Status==='Published'&&addressed);
+  }).slice(-100).reverse();
+  var uploads=rows_(ss.getSheetByName('Uploads')).filter(function(r){return r.UploadID&&e1Visible_(p,r);}).slice(-150).reverse().map(function(r){
+    return {id:r.UploadID,officer:r.Officer,site:r.Site,shift:r.Shift,date:r.ShiftDate,topic:r.Topic,status:r.ReviewStatus,note:r.Note,reviewNote:r.ReviewNote,top:r.TopPick,used:r.UsedInFinal,link:r.DriveLink||'',task:r.ClickUpTask};
+  });
+  var reports=rows_(ss.getSheetByName('Reports')).filter(function(r){return r.ReportID&&(e1Review_(p)||String(r.Officer).toLowerCase()===String(p.Email).toLowerCase());}).slice(-100).reverse();
+  return e1Json_({context:context,messages:messages,uploads:uploads,reports:reports,canReview:e1Review_(p)||p.Role==='Creative Designer',canPublish:e1Wide_(p)});
+}
+function appAcknowledge(id) {
+  var p=guMe_(),sh=ss_().getSheetByName('Feedback'),c=cols_(sh),v=sh.getDataRange().getValues();
+  var lock=LockService.getScriptLock();lock.waitLock(10000);
+  try{
+    for(var i=1;i<v.length;i++)if(String(v[i][c.FeedbackID-1])===String(id)){
+      var r=v[i],addressed=r[c.ToAll-1]===true||r[c.ToSite-1]===p.Site||String(r[c.ToPerson-1]).toLowerCase()===String(p.Email).toLowerCase();
+      if(r[c.Status-1]!=='Published'||(!addressed&&!e1Wide_(p)))throw new Error('This direction is not addressed to you.');
+      var own=e1Sheet_('Acknowledgments',['Key','Email','FeedbackID','Time']);
+      if(!own.getDataRange().getValues().some(function(x){return x[0]===p.Email+':'+id;}))own.appendRow([p.Email+':'+id,p.Email,id,new Date()]);
+      sh.getRange(i+1,c.Acknowledged).setValue(true);sh.getRange(i+1,c.AcknowledgedAt).setValue(new Date());return 'Acknowledged';
+    }
+    throw new Error('Direction not found.');
+  }finally{lock.releaseLock();}
+}
+function appPublish(id) {
+  var p=guMe_();if(!e1Wide_(p))throw new Error('Lead access required.');
+  var sh=ss_().getSheetByName('Feedback'),c=cols_(sh),v=sh.getDataRange().getValues();
+  for(var i=1;i<v.length;i++)if(String(v[i][c.FeedbackID-1])===String(id)){
+    if(String(v[i][c.Source-1]).indexOf('ClickUp:')===0)throw new Error('Approve the source task in ClickUp, then sync.');
+    sh.getRange(i+1,c.Status).setValue('Published');sh.getRange(i+1,c.SentAt).setValue(new Date());return 'Published';
+  }throw new Error('Draft not found.');
+}
+function appReview(f) {
+  var p=guMe_();if(!e1Review_(p)&&p.Role!=='Creative Designer')throw new Error('Reviewer access required.');
+  if(['Accepted','Top pick','Reshoot'].indexOf(f.status)<0)throw new Error('Invalid review decision.');
+  if(f.status==='Reshoot'&&!String(f.note||'').trim())throw new Error('Explain what needs to be fixed.');
+  var lock=LockService.getScriptLock();lock.waitLock(10000);
+  try{var sh=ss_().getSheetByName('Uploads'),c=cols_(sh),v=sh.getDataRange().getValues();
+    for(var i=1;i<v.length;i++)if(String(v[i][c.UploadID-1])===String(f.id)){
+      if(v[i][c.ConsentSigned-1]!==true||v[i][c.NothingConfidential-1]!==true)throw new Error('Consent checks are incomplete.');
+      sh.getRange(i+1,c.ReviewStatus).setValue(f.status);sh.getRange(i+1,c.ReviewNote).setValue(e1Cell_(e1Text_(f.note,2000)));sh.getRange(i+1,c.ReviewedBy).setValue(p.Email);sh.getRange(i+1,c.ReviewedAt).setValue(new Date());return 'Review saved; ClickUp follow-up syncs on the next cycle.';
+    }throw new Error('Upload not found.');
+  }finally{lock.releaseLock();}
+}
+function appSync() { e1Admin_();runAll_();return e1Health_(); }
+function doGet(e) {
+  var html=e&&e.parameter&&e.parameter.page==='upload'?guHtml_():e1AppHtml_();
+  return HtmlService.createHtmlOutput(html).setTitle('E1 Engagement Capture').addMetaTag('viewport','width=device-width, initial-scale=1');
+}
+function e1AppHtml_() {
+  return String.raw`<!doctype html><html><head><base target="_top"><meta charset="utf-8"><style>
+  :root{font-family:Arial,sans-serif;color:#172033;background:#f4f5fa}*{box-sizing:border-box}body{margin:0}header{padding:24px 5%;background:#211c50;color:white;display:flex;justify-content:space-between;align-items:center}header h1{font-size:24px;margin:0 0 6px}header p{margin:0;color:#c9c5ef;font-size:13px}main{max-width:1160px;margin:auto;padding:24px}nav{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 24px}button,.button{font:inherit;cursor:pointer;border:0;border-radius:8px;background:#6452e8;color:white;padding:10px 15px;display:inline-block;text-decoration:none}button.secondary,.button.secondary{background:#eae7fa;color:#30266d}button:disabled{opacity:.5;cursor:wait}.panel,.card{background:white;border:1px solid #e3e5ef;border-radius:12px;padding:20px;margin-bottom:14px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px}.badge{display:inline-block;border-radius:20px;padding:5px 9px;background:#eeeafa;color:#5341a8;font-size:12px;margin:0 5px 5px 0}.muted{color:#687188;font-size:13px}.error{color:#ac2437;background:#fff0f2;padding:12px;border-radius:8px}.ok{color:#14704c}h2{font-size:22px;margin:0 0 16px}h3{font-size:16px;margin:0 0 10px}.message{white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.55;font-size:14px}a{color:#5c49c8}table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:12px;border-bottom:1px solid #eee;font-size:14px}.scroll{overflow:auto}.empty{padding:32px;text-align:center;color:#687188}select,textarea{padding:9px;border:1px solid #ccd0df;border-radius:6px;font:inherit;max-width:100%}#notice{margin-bottom:16px}.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}@media(max-width:600px){header{padding:20px}main{padding:16px}nav button{flex:1;padding:10px}table{min-width:600px}}
+  </style></head><body><header><div><h1>E1 Engagement Capture</h1><p>EmpireOne · People, moments, and follow-through</p></div><span id="identity">Signing in…</span></header><main><div id="notice" role="status"></div><nav id="nav"></nav><section id="view"><div class="panel">Loading your workspace…</div></section></main><script>
+  var DATA=null,PAGE='today';function esc(v){return String(v==null?'':v).replace(/[&<>"']/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];});}function rpc(fn,arg){return new Promise(function(resolve,reject){google.script.run.withSuccessHandler(resolve).withFailureHandler(reject)[fn](arg);});}function dt(v){return v?new Date(v).toLocaleString():'—';}function notice(t,error){document.getElementById('notice').innerHTML=t?'<div class="'+(error?'error':'panel ok')+'">'+esc(t)+'</div>':'';}function safeUrl(u){return /^https:\/\/(drive.google.com|app.clickup.com|docs.google.com)\//.test(String(u))?u:'#';}
+  async function load(){try{DATA=await rpc('appData');var c=DATA.context;document.getElementById('identity').innerHTML=esc(c.name)+'<br><small>'+esc(c.role)+'</small>';document.getElementById('nav').innerHTML=['today','capture','library'].concat(DATA.canReview?['review']:[]).concat(['reports','connection']).map(function(p){return '<button class="secondary" onclick="show(\''+p+'\')">'+p[0].toUpperCase()+p.slice(1)+'</button>';}).join('');render();}catch(e){notice(e.message||e,true);document.getElementById('view').innerHTML='<div class="panel"><h2>Sign-in required</h2><p>Open this app using the work account listed in People. Access is limited to active EmpireOne team members.</p><button onclick="load()">Try again</button></div>';}}
+  function show(p){PAGE=p;notice('');render();}function empty(t){return '<div class="panel empty">'+esc(t)+'</div>';}
+  function render(){var v=document.getElementById('view'),c=DATA.context,h=c.health;if(PAGE==='today'){var msgs=DATA.messages.filter(function(m){return m.Status==='Published'&&Date.now()-new Date(m.SentAt).getTime()<86400000;});v.innerHTML='<h2>Today</h2><div class="grid"><div class="card"><h3>Capture your shift</h3><p class="muted">'+esc(c.site)+' · '+esc(c.shift)+'</p><p>Upload photos and videos, add context, and choose your best moments.</p><button onclick="show(\'capture\')">Start capturing</button></div><div class="card"><h3>Connected to ClickUp</h3><p>EmpireOne · Engagement</p><p class="muted">Last sync: '+esc(dt(h.lastSync))+' · '+esc(h.syncState)+'</p><a class="button secondary" href="https://app.clickup.com/90161592694/v/s/1300380000003391" target="_blank" rel="noopener">Open Engagement space</a></div></div><h3>Directions and themes</h3>'+msgs.map(function(m){return '<article class="panel"><span class="badge">'+esc(m.Type)+'</span><h3>'+esc(m.Title||'Team direction')+'</h3><p class="message">'+esc(m.Message)+'</p><button onclick="ack(\''+esc(m.FeedbackID)+'\')">Got it</button></article>';}).join('')+(!msgs.length?empty('No published directions in the last 24 hours.'): '');}
+  if(PAGE==='capture')v.innerHTML='<h2>Capture</h2><div class="panel"><h3>Photos and videos</h3><p>Select one file or a batch from your shift or event. Each file is saved to your site folder and sent for review.</p><p class="muted">Up to 35 MB per file. Consent is required before saving.</p><a class="button" href="'+esc(c.url)+'?page=upload">Open upload page</a></div>';
+  if(PAGE==='library'||PAGE==='review'){var items=DATA.uploads.filter(function(u){return PAGE!=='review'||u.status==='Pending';});v.innerHTML='<h2>'+(PAGE==='review'?'Review queue':'Library')+'</h2>'+items.map(function(u){return '<article class="panel"><span class="badge">'+esc(u.status||'Pending')+'</span><span class="muted">'+esc(u.site)+' · '+esc(u.shift)+' · '+esc(dt(u.date))+'</span><h3>'+esc(u.id)+' · '+esc(u.topic)+'</h3><p class="muted">'+esc(u.officer)+'</p><p class="message">'+esc(u.note)+'</p>'+(u.link?'<p><a href="'+esc(safeUrl(u.link))+'" target="_blank" rel="noopener">Open media in Google Drive</a></p>':'<p class="muted">Open the existing Capture app or site Drive folder for this older file.</p>')+(u.reviewNote?'<p>Reviewer: '+esc(u.reviewNote)+'</p>':'')+(u.task?'<p><a href="https://app.clickup.com/t/'+encodeURIComponent(u.task)+'" target="_blank" rel="noopener">Open ClickUp follow-up</a></p>':'')+(DATA.canReview?'<button class="secondary" onclick="review(\''+esc(u.id)+'\')">Review</button>':'')+'</article>';}).join('')+(!items.length?empty('Nothing waiting here.'): '');}
+  if(PAGE==='reports')v.innerHTML='<h2>Shift reports</h2><div class="panel"><p>Your existing Engagement Capture shift workflow remains the place to start shifts, complete steps, submit, verify, and sign off.</p></div><div class="panel scroll"><table><thead><tr><th>Officer</th><th>Site / shift</th><th>Date</th><th>Status</th><th>Summary</th></tr></thead><tbody>'+DATA.reports.map(function(r){return '<tr><td>'+esc(r.Officer)+'</td><td>'+esc(r.Site)+' / '+esc(r.Shift)+'</td><td>'+esc(dt(r.ShiftDate))+'</td><td>'+esc(r.SignedOff?'Signed off':r.Verified?'Verified':r.SubmittedAt?'Submitted':'In progress')+'</td><td>'+esc(r.EngagementDone)+'</td></tr>';}).join('')+'</tbody></table></div>';
+  if(PAGE==='connection')v.innerHTML='<h2>ClickUp connection</h2><div class="panel"><span class="badge">'+esc(h.syncState)+'</span><h3>EmpireOne · Engagement</h3><p>Daily directions come from approved site tasks. Reshoots, selected content, and late reports create assigned follow-ups.</p><p class="muted">Version '+esc(h.version)+' · Last cycle '+esc(dt(h.lastSync))+'</p>'+(c.role==='Admin'?'<button id="sync" onclick="sync()">Sync now</button>':'')+'</div>'+h.stages.map(function(s){return '<div class="panel"><h3>'+esc(s.name)+'</h3><p>'+esc(s.state||'Not run')+' · '+esc(dt(s.at))+'</p><p class="muted">'+esc(s.detail||'')+'</p></div>';}).join('');}
+  async function ack(id){try{notice(await rpc('appAcknowledge',id));await load();}catch(e){notice(e.message||e,true);}}async function review(id){var status=prompt('Decision: Accepted, Top pick, or Reshoot','Accepted');if(!status)return;var note=prompt('Reviewer note (required for Reshoot)','');if(note===null)return;try{notice(await rpc('appReview',{id:id,status:status,note:note}));await load();}catch(e){notice(e.message||e,true);}}async function sync(){var b=document.getElementById('sync');b.disabled=true;try{await rpc('appSync');notice('Sync completed.');await load();}catch(e){notice(e.message||e,true);}finally{if(b)b.disabled=false;}}
+  load();</script></body></html>`;
+}
+
+// Legacy schedules are inert; setup installs the owner-gated runAll_ schedule.
+function runAll() { return 'Superseded by runAll_'; }
