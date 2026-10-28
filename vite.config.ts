@@ -13,7 +13,10 @@ export default defineConfig(() => {
     },
     server: {
       port: 3000,
-      host: '0.0.0.0',
+      // Listen on IPv6 and IPv4. `localhost` resolves to ::1 first, and an
+      // IPv4-only socket makes that address refuse the connection.
+      host: '::',
+      allowedHosts: true,
       // HMR is disabled in AI Studio via DISABLE_HMR env var.
       // Do not modify—file watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
