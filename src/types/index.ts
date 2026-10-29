@@ -42,7 +42,10 @@ export interface UploadItem {
   topic: string;
   spot: string;
   mediaType: MediaType;
-  mediaUrl: string; // URL / data URI / unsplash placeholder
+  mediaUrl: string; // Drive thumbnail when the file is stored. Never a blob: URL from the server.
+  driveFileId?: string;
+  mediaStatus?: 'pending' | 'stored' | 'unrecoverable';
+  webViewLink?: string;
   capturedAt: string; // ISO
   uploadedAt: string; // ISO
   location?: string; // "lat, lng"

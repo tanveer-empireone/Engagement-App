@@ -241,6 +241,19 @@ const PersonRow: React.FC<{
   onRemove: () => void;
 }> = ({ person, sites, onUpdate, onRemove }) => {
   const admin = isAdminEmail(person.Email);
+  const saved = {
+    Name: person.Name,
+    Role: person.Role,
+    Site: person.Site,
+    Shift: person.Shift || 'Peak'
+  };
+  const [draft, setDraft] = useState(saved);
+  useEffect(() => {
+    setDraft(saved);
+    // Reset the draft when the server row changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [person.Email, person.Name, person.Role, person.Site, person.Shift]);
+
   return (
     <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
       <div className="flex items-center justify-between gap-2">
@@ -272,23 +285,18 @@ const PersonRow: React.FC<{
       </div>
       <div className="grid sm:grid-cols-4 gap-2">
         <input
-          defaultValue={person.Name}
-          key={`${person.Email}-name-${person.Name}`}
+          value={draft.Name}
           aria-label={`Name for ${person.Email}`}
-          onBlur={(event) => {
-            if (event.target.value.trim() && event.target.value !== person.Name) {
-              onUpdate({ Name: event.target.value.trim() });
-            }
-          }}
+          onChange={(event) => setDraft((prev) => ({ ...prev, Name: event.target.value }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         />
         {admin ? (
           <div className="rounded-xl px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-500">Admin</div>
         ) : (
           <select
-            value={ASSIGNABLE_ROLES.includes(person.Role) ? person.Role : 'Officer'}
+            value={ASSIGNABLE_ROLES.includes(draft.Role) ? draft.Role : 'Officer'}
             aria-label={`Role for ${person.Email}`}
-            onChange={(event) => onUpdate({ Role: event.target.value as Role })}
+            onChange={(event) => setDraft((prev) => ({ ...prev, Role: event.target.value as Role }))}
             className="glass-input rounded-xl px-3 py-2 text-xs"
           >
             {ASSIGNABLE_ROLES.map((item) => (
@@ -299,12 +307,12 @@ const PersonRow: React.FC<{
           </select>
         )}
         <select
-          value={person.Site}
+          value={draft.Site}
           aria-label={`Site for ${person.Email}`}
-          onChange={(event) => onUpdate({ Site: event.target.value })}
+          onChange={(event) => setDraft((prev) => ({ ...prev, Site: event.target.value }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
-          {!sites.includes(person.Site) && <option value={person.Site}>{person.Site}</option>}
+          {!sites.includes(draft.Site) && <option value={draft.Site}>{draft.Site}</option>}
           {sites.map((item) => (
             <option key={item} value={item}>
               {item}
@@ -312,9 +320,9 @@ const PersonRow: React.FC<{
           ))}
         </select>
         <select
-          value={person.Shift || 'Peak'}
+          value={draft.Shift}
           aria-label={`Shift for ${person.Email}`}
-          onChange={(event) => onUpdate({ Shift: event.target.value })}
+          onChange={(event) => setDraft((prev) => ({ ...prev, Shift: event.target.value }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           {SHIFTS_LIST.map((item) => (
@@ -323,6 +331,29 @@ const PersonRow: React.FC<{
             </option>
           ))}
         </select>
+      </div>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() =>
+            onUpdate({
+              Name: draft.Name.trim() || person.Name,
+              Role: admin ? 'Admin' : draft.Role,
+              Site: draft.Site,
+              Shift: draft.Shift
+            })
+          }
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
+        >
+          Save Changes
+        </button>
+        <button
+          type="button"
+          onClick={() => setDraft(saved)}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-slate-200 cursor-pointer"
+        >
+          Cancel
+        </button>
       </div>
     </div>
   );
@@ -410,8 +441,22 @@ const EmptyRecords: React.FC<{ label: string }> = ({ label }) => (
 
 const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; message: string }) => void }> = ({ item, show }) => {
   const { updateUpload, deleteUpload, sites, topics } = useSignedInApp();
+  const [site, setSite] = useState(item.site);
+  const [topic, setTopic] = useState(item.topic);
+  const [reviewStatus, setReviewStatus] = useState(item.reviewStatus);
+  const [spot, setSpot] = useState(item.spot);
+  const [topPick, setTopPick] = useState(item.topPick);
   const [note, setNote] = useState(item.note);
   const [reviewNote, setReviewNote] = useState(item.reviewNote || '');
+  useEffect(() => {
+    setSite(item.site);
+    setTopic(item.topic);
+    setReviewStatus(item.reviewStatus);
+    setSpot(item.spot);
+    setTopPick(item.topPick);
+    setNote(item.note);
+    setReviewNote(item.reviewNote || '');
+  }, [item.id, item.site, item.topic, item.reviewStatus, item.spot, item.topPick, item.note, item.reviewNote]);
 
   return (
     <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
@@ -430,35 +475,35 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
       </div>
       <div className="grid sm:grid-cols-3 gap-2">
         <select
-          value={item.site}
+          value={site}
           aria-label={`Site for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { site: event.target.value }))}
+          onChange={(event) => setSite(event.target.value)}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
-          {!sites.some((site) => site.SiteName === item.site) && <option value={item.site}>{item.site}</option>}
-          {sites.map((site) => (
-            <option key={site.Code} value={site.SiteName}>
-              {site.SiteName}
+          {!sites.some((entry) => entry.SiteName === site) && <option value={site}>{site}</option>}
+          {sites.map((entry) => (
+            <option key={entry.Code} value={entry.SiteName}>
+              {entry.SiteName}
             </option>
           ))}
         </select>
         <select
-          value={item.topic}
+          value={topic}
           aria-label={`Topic for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { topic: event.target.value }))}
+          onChange={(event) => setTopic(event.target.value)}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
-          {!topics.some((topic) => topic.Topic === item.topic) && <option value={item.topic}>{item.topic}</option>}
-          {topics.map((topic) => (
-            <option key={topic.Code} value={topic.Topic}>
-              {topic.Topic}
+          {!topics.some((entry) => entry.Topic === topic) && <option value={topic}>{topic}</option>}
+          {topics.map((entry) => (
+            <option key={entry.Code} value={entry.Topic}>
+              {entry.Topic}
             </option>
           ))}
         </select>
         <select
-          value={item.reviewStatus}
+          value={reviewStatus}
           aria-label={`Review status for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { reviewStatus: event.target.value as ReviewStatus }))}
+          onChange={(event) => setReviewStatus(event.target.value as ReviewStatus)}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           {REVIEW_STATUSES.map((status) => (
@@ -469,17 +514,13 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         </select>
       </div>
       <input
-        value={item.spot}
+        value={spot}
         aria-label={`Spot for ${item.id}`}
-        onChange={(event) => show(updateUpload(item.id, { spot: event.target.value }))}
+        onChange={(event) => setSpot(event.target.value)}
         className="glass-input rounded-xl px-3 py-2 text-xs w-full"
       />
       <label className="flex items-center gap-2 text-[11px] text-slate-600">
-        <input
-          type="checkbox"
-          checked={item.topPick}
-          onChange={(event) => show(updateUpload(item.id, { topPick: event.target.checked }))}
-        />
+        <input type="checkbox" checked={topPick} onChange={(event) => setTopPick(event.target.checked)} />
         Top pick
       </label>
       <textarea
@@ -495,13 +536,30 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         placeholder="Review note"
         className="glass-input rounded-xl px-3 py-2 text-xs w-full min-h-16"
       />
-      <button
-        type="button"
-        onClick={() => show(updateUpload(item.id, { note, reviewNote }))}
-        className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
-      >
-        Save notes
-      </button>
+      <div className="flex gap-2">
+        <button
+          type="button"
+          onClick={() => show(updateUpload(item.id, { site, topic, reviewStatus, spot, topPick, note, reviewNote }))}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
+        >
+          Save Changes
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setSite(item.site);
+            setTopic(item.topic);
+            setReviewStatus(item.reviewStatus);
+            setSpot(item.spot);
+            setTopPick(item.topPick);
+            setNote(item.note);
+            setReviewNote(item.reviewNote || '');
+          }}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-slate-200 cursor-pointer"
+        >
+          Cancel
+        </button>
+      </div>
     </div>
   );
 };
@@ -513,6 +571,14 @@ const DirectionEditor: React.FC<{
   const { updateDirection, deleteDirection } = useSignedInApp();
   const [title, setTitle] = useState(item.title);
   const [message, setMessage] = useState(item.message);
+  const [status, setStatus] = useState(item.status);
+  const [acknowledged, setAcknowledged] = useState(item.acknowledged);
+  useEffect(() => {
+    setTitle(item.title);
+    setMessage(item.message);
+    setStatus(item.status);
+    setAcknowledged(item.acknowledged);
+  }, [item.feedbackId, item.title, item.message, item.status, item.acknowledged]);
 
   return (
     <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
@@ -540,30 +606,36 @@ const DirectionEditor: React.FC<{
       />
       <div className="flex flex-wrap gap-2 items-center">
         <select
-          value={item.status}
+          value={status}
           aria-label={`Status for ${item.feedbackId}`}
-          onChange={(event) =>
-            show(updateDirection(item.feedbackId, { status: event.target.value as DirectionMessage['status'] }))
-          }
+          onChange={(event) => setStatus(event.target.value as DirectionMessage['status'])}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           <option value="Published">Published</option>
           <option value="Draft">Draft</option>
         </select>
         <label className="flex items-center gap-2 text-[11px] text-slate-600">
-          <input
-            type="checkbox"
-            checked={item.acknowledged}
-            onChange={(event) => show(updateDirection(item.feedbackId, { acknowledged: event.target.checked }))}
-          />
+          <input type="checkbox" checked={acknowledged} onChange={(event) => setAcknowledged(event.target.checked)} />
           Acknowledged
         </label>
         <button
           type="button"
-          onClick={() => show(updateDirection(item.feedbackId, { title, message }))}
+          onClick={() => show(updateDirection(item.feedbackId, { title, message, status, acknowledged }))}
           className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
         >
-          Save text
+          Save Changes
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setTitle(item.title);
+            setMessage(item.message);
+            setStatus(item.status);
+            setAcknowledged(item.acknowledged);
+          }}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-slate-200 cursor-pointer"
+        >
+          Cancel
         </button>
       </div>
     </div>
@@ -578,6 +650,15 @@ const ReportEditor: React.FC<{
   const [done, setDone] = useState(item.engagementDone);
   const [notes, setNotes] = useState(item.notes || '');
   const [hours, setHours] = useState(String(item.hoursWorked));
+  const [signedOff, setSignedOff] = useState(item.signedOff);
+  const [verified, setVerified] = useState(item.verified);
+  useEffect(() => {
+    setDone(item.engagementDone);
+    setNotes(item.notes || '');
+    setHours(String(item.hoursWorked));
+    setSignedOff(item.signedOff);
+    setVerified(item.verified);
+  }, [item.reportId, item.engagementDone, item.notes, item.hoursWorked, item.signedOff, item.verified]);
 
   return (
     <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
@@ -619,19 +700,11 @@ const ReportEditor: React.FC<{
           className="glass-input rounded-xl px-3 py-2 text-xs w-24"
         />
         <label className="flex items-center gap-2 text-[11px] text-slate-600">
-          <input
-            type="checkbox"
-            checked={item.signedOff}
-            onChange={(event) => show(updateShiftReport(item.reportId, { signedOff: event.target.checked }))}
-          />
+          <input type="checkbox" checked={signedOff} onChange={(event) => setSignedOff(event.target.checked)} />
           Signed off
         </label>
         <label className="flex items-center gap-2 text-[11px] text-slate-600">
-          <input
-            type="checkbox"
-            checked={item.verified}
-            onChange={(event) => show(updateShiftReport(item.reportId, { verified: event.target.checked }))}
-          />
+          <input type="checkbox" checked={verified} onChange={(event) => setVerified(event.target.checked)} />
           Verified
         </label>
         <button
@@ -641,13 +714,28 @@ const ReportEditor: React.FC<{
               updateShiftReport(item.reportId, {
                 engagementDone: done,
                 notes,
-                hoursWorked: Number(hours) || 0
+                hoursWorked: Number(hours) || 0,
+                signedOff,
+                verified
               })
             )
           }
           className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
         >
-          Save report
+          Save Changes
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setDone(item.engagementDone);
+            setNotes(item.notes || '');
+            setHours(String(item.hoursWorked));
+            setSignedOff(item.signedOff);
+            setVerified(item.verified);
+          }}
+          className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-white border border-slate-200 cursor-pointer"
+        >
+          Cancel
         </button>
       </div>
     </div>
@@ -655,12 +743,10 @@ const ReportEditor: React.FC<{
 };
 
 const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string }) => void }> = ({ show }) => {
-  const { appConfig, updateAppConfig, clickUpToken, setClickUpToken, testClickUpToken } = useSignedInApp();
+  const { appConfig, updateAppConfig } = useSignedInApp();
   const [draft, setDraft] = useState(appConfig);
-  const [token, setToken] = useState(clickUpToken);
   const [scriptNote, setScriptNote] = useState<string | null>(null);
   const [scriptBusy, setScriptBusy] = useState(false);
-  const [tokenBusy, setTokenBusy] = useState(false);
 
   useEffect(() => {
     setDraft(appConfig);
@@ -682,7 +768,7 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
       <div className="p-3 rounded-2xl bg-white/70 border border-slate-200/70 text-[11px] text-slate-600 flex items-start gap-2">
         <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
         <p>
-          These ids are what the read connectors use. There is no Apps Script, Drive, or ClickUp write client wired up. Leaving the Apps Script URL empty means a write cannot be sent.
+          These ids are what the read connectors use. Capture uploads go to Drive through the server. ClickUp stays read-only, and its token is never stored in the browser.
         </p>
       </div>
       <form
@@ -697,41 +783,19 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
         {field('clickUpTeamId', 'ClickUp team id')}
         {field('clickUpSpaceId', 'ClickUp space id')}
         {field('appsScriptUrl', 'Apps Script web app URL')}
-        <button type="submit" className="px-3 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 cursor-pointer">
-          Save configuration
-        </button>
+        <div className="flex gap-2">
+          <button type="submit" className="px-3 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 cursor-pointer">
+            Save Changes
+          </button>
+          <button
+            type="button"
+            onClick={() => setDraft(appConfig)}
+            className="px-3 py-2 rounded-xl text-xs font-semibold bg-white border border-slate-200 cursor-pointer"
+          >
+            Cancel
+          </button>
+        </div>
       </form>
-
-      <div className="p-4 rounded-2xl bg-white/70 border border-slate-200/70 space-y-2">
-        <h3 className="text-sm font-bold text-slate-900">ClickUp personal token</h3>
-        <p className="text-[11px] text-slate-500">
-          Saved on the server and used for read requests. A blank token cannot connect, and this does not create tasks.
-        </p>
-        <input
-          type="password"
-          value={token}
-          onChange={(event) => setToken(event.target.value)}
-          placeholder="pk_..."
-          aria-label="ClickUp API token"
-          autoComplete="off"
-          className="glass-input rounded-xl px-3 py-2 text-xs w-full"
-        />
-        <button
-          type="button"
-          disabled={tokenBusy}
-          onClick={() => {
-            setTokenBusy(true);
-            setClickUpToken(token.trim());
-            void testClickUpToken(token.trim()).then((result) => {
-              show({ ok: result.success, message: result.message });
-              setTokenBusy(false);
-            });
-          }}
-          className="px-3 py-2 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer disabled:opacity-50"
-        >
-          {tokenBusy ? 'Testing…' : 'Save and test ClickUp token'}
-        </button>
-      </div>
 
       <div className="p-4 rounded-2xl bg-white/70 border border-slate-200/70 space-y-2">
         <h3 className="text-sm font-bold text-slate-900">Apps Script ping</h3>

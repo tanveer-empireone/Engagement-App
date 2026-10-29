@@ -27,12 +27,8 @@ import {
 import {
   SITES_METADATA,
   TOPICS_LIST,
-  generateUploadId,
-  buildE1FileName,
-  buildFolderPath,
   calculateTopPickRoom,
-  formatYmdClean,
-  reverseGeocodeApprox
+  formatYmdClean
 } from '../utils/idGenerator';
 import {
   canOpenAdminPanel,
@@ -61,11 +57,10 @@ import {
 import {
   fetchAllLiveClickUpData,
   testClickUpConnection,
-  getStoredClickUpToken,
-  saveStoredClickUpToken,
   CLICKUP_ENGAGEMENT_SPACE_ID,
   CLICKUP_TEAM_ID
 } from '../services/clickupService';
+import { apiFetch } from '../services/apiClient';
 import { getAppsScriptConfig, saveAppsScriptConfig } from '../services/appsScriptService';
 
 export interface DirectoryUserInput {
@@ -104,8 +99,6 @@ interface AppContextType {
   liveSheetsMeta: Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null;
   liveDriveData: Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null;
 
-  clickUpToken: string;
-  setClickUpToken: (token: string) => void;
   isClickUpConnected: boolean;
   isFetchingClickUp: boolean;
   liveClickUpData: Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null;
@@ -128,7 +121,7 @@ interface AppContextType {
   fetchLiveDrive: () => Promise<ConnectorReport>;
   fetchLiveClickUp: () => Promise<ConnectorReport>;
   fetchLiveAllData: () => Promise<void>;
-  testClickUpToken: (token: string) => Promise<{ success: boolean; message: string }>;
+  testClickUpToken: () => Promise<{ success: boolean; message: string }>;
   updateAppConfig: (patch: Partial<AppIntegrationConfig>) => ActionResult;
 
   addDirectoryUser: (input: DirectoryUserInput) => ActionResult;
@@ -154,7 +147,8 @@ interface AppContextType {
     topic: string;
     spot: string;
     mediaType: 'Photo' | 'Video';
-    mediaUrl: string;
+    mediaUrl?: string;
+    file?: File;
     fileSizeBytes?: number;
     capturedAt: string;
     location?: string;
@@ -214,7 +208,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [liveSheetsMeta, setLiveSheetsMeta] = useState<Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null>(null);
   const [liveDriveData, setLiveDriveData] = useState<Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null>(null);
 
-  const [clickUpToken, setClickUpTokenState] = useState<string>(getStoredClickUpToken);
   const [isClickUpConnected, setIsClickUpConnected] = useState(false);
   const [isFetchingClickUp, setIsFetchingClickUp] = useState(false);
   const [liveClickUpData, setLiveClickUpData] = useState<Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null>(null);
@@ -222,11 +215,25 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
   const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
 
-  // Load server state on initial load
+  // Load server state after Firebase has a user. The ID token is the API identity.
   useEffect(() => {
+    if (!authReady) return;
+    if (!googleUser) {
+      setPeople(sanitizeDirectory(INITIAL_PEOPLE));
+      setUploads(INITIAL_UPLOADS);
+      setDirections(INITIAL_DIRECTIONS);
+      setShiftReports(INITIAL_REPORTS);
+      setRosterReady(true);
+      return;
+    }
     let mounted = true;
-    fetch('/api/state')
-      .then((res) => {
+    apiFetch('/api/state')
+      .then(async (res) => {
+        if (res.status === 401 || res.status === 403 || res.status === 503) {
+          const body = await res.json().catch(() => ({}));
+          if (res.status === 503 && body?.message) setLiveError(String(body.message));
+          return null;
+        }
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         return res.json();
       })
@@ -239,9 +246,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         if (Array.isArray(data.shiftReports)) setShiftReports(data.shiftReports);
         if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
         if (data.syncHealth && typeof data.syncHealth === 'object') setSyncHealth(data.syncHealth);
-        if (typeof data.clickUpToken === 'string' && data.clickUpToken) {
-          setClickUpTokenState(data.clickUpToken);
-        }
       })
       .catch((err) => {
         console.warn('Could not fetch server state:', err);
@@ -252,7 +256,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [authReady, googleUser]);
 
   const googleEmail = googleUser?.email || '';
   const googleName = googleUser?.displayName || '';
@@ -275,16 +279,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   );
   const canPublish = isWide;
 
-  const setClickUpToken = (tok: string) => {
-    setClickUpTokenState(tok);
-    saveStoredClickUpToken(tok);
-    fetch('/api/config/clickup-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tok })
-    }).catch((err) => console.error('Failed to save ClickUp token to server:', err));
-  };
-
   const denyAdmin = (): ActionResult => ({
     ok: false,
     message: 'Only an admin can change these settings.'
@@ -293,7 +287,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setShowCaptureForAdmin = (value: boolean): ActionResult => {
     if (!isAdmin) return denyAdmin();
     setShowCaptureForAdminState(value);
-    fetch('/api/admin/capture-toggle', {
+    apiFetch('/api/admin/capture-toggle', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ showCaptureForAdmin: value })
@@ -331,7 +325,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     if (!currentUser) return;
-    fetch('/api/session/ensure-user', {
+    apiFetch('/api/session/ensure-user', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -454,28 +448,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const testClickUpToken = async (token: string): Promise<{ success: boolean; message: string }> => {
-    const res = await testClickUpConnection(token, appConfig.clickUpSpaceId.trim() || CLICKUP_ENGAGEMENT_SPACE_ID);
+  const testClickUpToken = async (): Promise<{ success: boolean; message: string }> => {
+    const res = await testClickUpConnection(appConfig.clickUpSpaceId.trim() || CLICKUP_ENGAGEMENT_SPACE_ID);
     setIsClickUpConnected(res.success);
     return res;
   };
 
   const fetchLiveClickUp = async (): Promise<ConnectorReport> => {
-    if (!clickUpToken) {
-      setIsClickUpConnected(false);
-      return {
-        name: 'ClickUp',
-        state: 'Skipped',
-        detail: 'ClickUp was not read. No API token is saved. This app cannot create or update ClickUp tasks.'
-      };
-    }
     if (!appConfig.clickUpSpaceId.trim()) {
       return { name: 'ClickUp', state: 'Error', detail: 'No ClickUp space id is configured.' };
     }
 
     setIsFetchingClickUp(true);
     try {
-      const result = await fetchAllLiveClickUpData(clickUpToken, appConfig.clickUpSpaceId.trim());
+      const result = await fetchAllLiveClickUpData(appConfig.clickUpSpaceId.trim());
       setLiveClickUpData(result);
       setIsClickUpConnected(true);
 
@@ -533,16 +519,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [googleToken]);
 
-  useEffect(() => {
-    if (clickUpToken) {
-      void testClickUpToken(clickUpToken).then((res) => {
-        if (res.success) void fetchLiveClickUp();
-      });
-    }
-    // Check a saved token once on load.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
   const getTopPickRoom = (site: string, shift: string, mode: string, eventName: string = '', dateStr?: string) => {
     const ymd = dateStr || new Date().toISOString().slice(0, 10);
     if (!currentUser) return { used: 0, limit: 0, left: 0 };
@@ -574,7 +550,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     topic: string;
     spot: string;
     mediaType: 'Photo' | 'Video';
-    mediaUrl: string;
+    mediaUrl?: string;
+    file?: File;
     fileSizeBytes?: number;
     capturedAt: string;
     location?: string;
@@ -586,66 +563,62 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     ext?: string;
   }>): Promise<UploadItem[]> => {
     if (!currentUser) return [];
-    const existingIds = uploads.map((u) => u.id);
     const created: UploadItem[] = [];
 
     for (const f of filesData) {
-      const siteMeta = sites.find((s) => s.SiteName === f.site) || sites[0];
-      const topicMeta = topics.find((t) => t.Topic === f.topic) || topics[0];
-      const dateClean = f.shiftDate.replace(/-/g, '');
-      const prefix = `${siteMeta.Code}_${dateClean}_${topicMeta.Code}_`;
-      const id = generateUploadId(prefix, existingIds.concat(created.map((c) => c.id)));
-      const ext = f.ext || (f.mediaType === 'Video' ? 'mp4' : 'jpg');
-      const fileName = buildE1FileName(id, f.mediaType, true, ext);
-      const folderPath = buildFolderPath(siteMeta.FolderName, f.shiftDate, f.shift, f.mode, f.eventName, fileName);
-
-      let place = '';
-      let mapLink = '';
-      if (f.location) {
-        const parts = f.location.split(',').map((p) => parseFloat(p.trim()));
-        if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-          const geo = reverseGeocodeApprox(parts[0], parts[1]);
-          place = geo.placeName;
-          mapLink = geo.mapLink;
-        }
+      if (!f.file) {
+        throw new Error('Choose a photo or video to upload.');
       }
-
-      created.push({
-        id,
-        fileName,
-        officer: currentUser.Email,
-        officerName: currentUser.Name,
-        site: f.site,
-        shift: f.shift,
-        mode: f.mode,
-        eventName: f.eventName || '',
-        shiftDate: f.shiftDate,
-        topic: f.topic,
-        spot: f.spot,
-        mediaType: f.mediaType,
-        mediaUrl: f.mediaUrl,
-        fileSizeBytes: f.fileSizeBytes || 2500000,
-        capturedAt: f.capturedAt || new Date().toISOString(),
-        uploadedAt: new Date().toISOString(),
-        location: f.location || '',
-        place,
-        mapLink,
-        note: f.note,
-        peopleInShot: f.peopleInShot || '',
-        consentSigned: f.consentSigned,
-        nothingConfidential: f.nothingConfidential,
-        topPick: f.topPick,
-        reviewStatus: 'Pending',
-        folderPath
+      const sessionRes = await apiFetch('/api/uploads/session', {
+        method: 'POST',
+        body: JSON.stringify({
+          mimeType: f.file.type || (f.mediaType === 'Video' ? 'video/mp4' : 'image/jpeg'),
+          size: f.file.size,
+          site: f.site,
+          shift: f.shift,
+          mode: f.mode,
+          eventName: f.eventName,
+          shiftDate: f.shiftDate,
+          topic: f.topic,
+          spot: f.spot,
+          note: f.note,
+          topPick: f.topPick,
+          consentSigned: f.consentSigned,
+          nothingConfidential: f.nothingConfidential,
+          capturedAt: f.capturedAt,
+          location: f.location,
+          peopleInShot: f.peopleInShot,
+          ext: f.ext || f.file.name.split('.').pop()
+        })
       });
+      const session = await sessionRes.json().catch(() => ({}));
+      if (!sessionRes.ok || !session.uploadUrl || !session.uploadId) {
+        throw new Error(session.message || 'Upload could not start.');
+      }
+      const put = await fetch(session.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': f.file.type || 'application/octet-stream' },
+        body: f.file
+      });
+      if (!put.ok) {
+        throw new Error(`Google Drive rejected the file (${put.status}).`);
+      }
+      const putBody = await put.json().catch(() => ({}));
+      if (!putBody.id) {
+        throw new Error('Drive did not return a file id.');
+      }
+      const doneRes = await apiFetch('/api/uploads/complete', {
+        method: 'POST',
+        body: JSON.stringify({ uploadId: session.uploadId, driveFileId: putBody.id })
+      });
+      const done = await doneRes.json().catch(() => ({}));
+      if (!doneRes.ok || !done.upload) {
+        throw new Error(done.message || 'Upload could not be saved.');
+      }
+      created.push(done.upload as UploadItem);
     }
 
-    setUploads((prev) => [...created, ...prev]);
-    fetch('/api/uploads/batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: created })
-    }).catch((err) => console.error('Failed to save batch uploads to server:', err));
+    if (created.length) setUploads((prev) => [...created, ...prev]);
     return created;
   };
 
@@ -669,7 +642,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    fetch('/api/uploads/review', {
+    apiFetch('/api/uploads/review', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -696,7 +669,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleUsedInFinal = (id: string) => {
     setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u)));
-    fetch('/api/uploads/toggle-final', {
+    apiFetch('/api/uploads/toggle-final', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
@@ -720,7 +693,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
-    fetch('/api/directions/acknowledge', {
+    apiFetch('/api/directions/acknowledge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ feedbackId, email: currentUser.Email, reply })
@@ -744,7 +717,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDirections((prev) =>
       prev.map((d) => (d.feedbackId === feedbackId ? { ...d, status: 'Published', sentAt: now } : d))
     );
-    fetch('/api/directions/publish', {
+    apiFetch('/api/directions/publish', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ feedbackId })
@@ -767,7 +740,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const reportId = `REP-${formatYmdClean(new Date())}-${siteMeta.Code}-${String(shiftReports.length + 1).padStart(2, '0')}`;
     const newReport: ShiftReport = { ...report, reportId, isLate: false };
     setShiftReports((prev) => [newReport, ...prev]);
-    fetch('/api/reports', {
+    apiFetch('/api/reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report: newReport })
@@ -778,7 +751,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setShiftReports((prev) =>
       prev.map((r) => (r.reportId === reportId ? { ...r, signedOff: true, verified: true } : r))
     );
-    fetch('/api/reports/sign-off', {
+    apiFetch('/api/reports/sign-off', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId })
@@ -833,7 +806,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSyncLogs(INITIAL_LOGS);
     setLiveSheetsMeta(null);
     setLiveDriveData(null);
-    fetch('/api/admin/reset-sample', {
+    apiFetch('/api/admin/reset-sample', {
       method: 'POST'
     }).catch((err) => console.error('Failed to reset sample data on server:', err));
   };
@@ -841,7 +814,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const updateAppConfig = (patch: Partial<AppIntegrationConfig>): ActionResult => {
     if (!isAdmin) return denyAdmin();
     setAppConfig((prev) => ({ ...prev, ...patch }));
-    fetch('/api/admin/config', {
+    apiFetch('/api/admin/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -867,7 +840,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Active: true
     });
     setPeople((prev) => sanitizeDirectory([...prev, person]));
-    fetch('/api/admin/users', {
+    apiFetch('/api/admin/users', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(input)
@@ -898,7 +871,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPeople((prev) =>
       sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, ...patch } : p)))
     );
-    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
+    apiFetch(`/api/admin/users/${encodeURIComponent(email)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -929,7 +902,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, Active: false } : p)));
     });
-    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
+    apiFetch(`/api/admin/users/${encodeURIComponent(email)}`, {
       method: 'DELETE'
     })
       .then((res) => res.json())
@@ -955,7 +928,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { ok: false, message: 'That upload is not on the server.' };
     }
     setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
+    apiFetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -969,7 +942,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = uploads.some((u) => u.id === id);
     if (!found) return { ok: false, message: 'That upload is not on the server.' };
     setUploads((prev) => prev.filter((u) => u.id !== id));
-    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
+    apiFetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete upload on server:', err));
 
@@ -980,7 +953,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isAdmin) return denyAdmin();
     const count = uploads.length;
     setUploads([]);
-    fetch('/api/admin/records/uploads', {
+    apiFetch('/api/admin/records/uploads', {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete all uploads on server:', err));
 
@@ -995,7 +968,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = directions.some((d) => d.feedbackId === feedbackId);
     if (!found) return { ok: false, message: 'That direction is not on the server.' };
     setDirections((prev) => prev.map((d) => (d.feedbackId === feedbackId ? { ...d, ...patch } : d)));
-    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
+    apiFetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -1009,7 +982,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = directions.some((d) => d.feedbackId === feedbackId);
     if (!found) return { ok: false, message: 'That direction is not on the server.' };
     setDirections((prev) => prev.filter((d) => d.feedbackId !== feedbackId));
-    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
+    apiFetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete direction on server:', err));
 
@@ -1020,7 +993,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isAdmin) return denyAdmin();
     const count = directions.length;
     setDirections([]);
-    fetch('/api/admin/records/directions', {
+    apiFetch('/api/admin/records/directions', {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete all directions on server:', err));
 
@@ -1035,7 +1008,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = shiftReports.some((r) => r.reportId === reportId);
     if (!found) return { ok: false, message: 'That report is not on the server.' };
     setShiftReports((prev) => prev.map((r) => (r.reportId === reportId ? { ...r, ...patch } : r)));
-    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
+    apiFetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
@@ -1049,7 +1022,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const found = shiftReports.some((r) => r.reportId === reportId);
     if (!found) return { ok: false, message: 'That report is not on the server.' };
     setShiftReports((prev) => prev.filter((r) => r.reportId !== reportId));
-    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
+    apiFetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete report on server:', err));
 
@@ -1060,7 +1033,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isAdmin) return denyAdmin();
     const count = shiftReports.length;
     setShiftReports([]);
-    fetch('/api/admin/records/reports', {
+    apiFetch('/api/admin/records/reports', {
       method: 'DELETE'
     }).catch((err) => console.error('Failed to delete all reports on server:', err));
 
@@ -1090,8 +1063,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isFetchingLiveDrive,
         liveSheetsMeta,
         liveDriveData,
-        clickUpToken,
-        setClickUpToken,
         isClickUpConnected,
         isFetchingClickUp,
         liveClickUpData,

@@ -125,6 +125,13 @@ export const getAccessToken = async (): Promise<string | null> => {
   return cachedAccessToken;
 };
 
+/** Firebase ID token for the API. This is not the Sheets/Drive access token. */
+export const getFirebaseIdToken = async (): Promise<string | null> => {
+  const user = auth.currentUser;
+  if (!user) return null;
+  return user.getIdToken();
+};
+
 export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;

@@ -1,8 +1,9 @@
 /**
  * ClickUp Live Read Service
  * STRICTLY READ-ONLY: All API requests use HTTP GET. No task creation, update, or deletion.
- * Uses Vite proxy (/api/clickup/...) to prevent browser CORS blocks.
+ * The server holds the ClickUp token. The browser only sends its Firebase ID token.
  */
+import { apiFetch } from './apiClient';
 
 export const CLICKUP_TEAM_ID = '90161592694';
 export const CLICKUP_ENGAGEMENT_SPACE_ID = '1300380000003391';
@@ -56,84 +57,27 @@ export interface LiveClickUpResult {
   isLive: boolean;
 }
 
-const STORAGE_KEY_CLICKUP_TOKEN = 'e1_clickup_api_token';
-
-export function getStoredClickUpToken(): string {
-  try {
-    return (
-      localStorage.getItem(STORAGE_KEY_CLICKUP_TOKEN) ||
-      (import.meta.env.VITE_CLICKUP_API_TOKEN as string) ||
-      ''
-    );
-  } catch {
-    return (import.meta.env.VITE_CLICKUP_API_TOKEN as string) || '';
-  }
-}
-
-export function saveStoredClickUpToken(token: string): void {
-  try {
-    localStorage.setItem(STORAGE_KEY_CLICKUP_TOKEN, token.trim());
-  } catch {}
-}
-
 /**
- * Execute HTTP GET through the Vite proxy or direct ClickUp endpoint
+ * Read ClickUp through the server. The browser does not send a ClickUp token.
  */
-async function clickUpGet(path: string, token: string): Promise<any> {
-  // Use local Vite proxy route first to avoid browser CORS restrictions
+async function clickUpGet(path: string): Promise<any> {
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
-  const proxyUrl = `/api/clickup${cleanPath}`;
-
-  const headers: HeadersInit = {
-    Authorization: token.trim(),
-    'Content-Type': 'application/json'
-  };
-
-  try {
-    const res = await fetch(proxyUrl, {
-      method: 'GET',
-      headers
-    });
-
-    if (res.ok) {
-      return await res.json();
-    }
-
-    // If proxy returned 404 or failed, try direct ClickUp API endpoint
-    if (res.status === 404 || res.status === 502) {
-      const directUrl = `https://api.clickup.com/api/v2${cleanPath}`;
-      const directRes = await fetch(directUrl, {
-        method: 'GET',
-        headers
-      });
-      if (directRes.ok) {
-        return await directRes.json();
-      }
-      const err = await directRes.text();
-      throw new Error(`ClickUp API returned ${directRes.status}: ${err}`);
-    }
-
+  const res = await apiFetch(`/api/clickup${cleanPath}`, { method: 'GET' });
+  if (!res.ok) {
     const err = await res.text();
-    throw new Error(`ClickUp API returned ${res.status}: ${err}`);
-  } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    throw new Error(`ClickUp request failed: ${msg}`);
+    throw new Error(err || `ClickUp API returned ${res.status}`);
   }
+  return res.json();
 }
 
 /**
  * Test ClickUp token against the target Engagement space (HTTP GET only)
  */
 export async function testClickUpConnection(
-  token: string,
   spaceId: string = CLICKUP_ENGAGEMENT_SPACE_ID
 ): Promise<{ success: boolean; message: string; space?: any }> {
-  if (!token || !token.trim()) {
-    return { success: false, message: 'Please enter your ClickUp Personal API Token (pk_...)' };
-  }
-
   try {
-    const data = await clickUpGet(`/space/${spaceId}`, token);
+    const data = await clickUpGet(`/space/${spaceId}`);
     return {
       success: true,
       message: `Successfully connected to ClickUp Space "${data.name || 'Engagement'}"!`,
@@ -153,18 +97,12 @@ export async function testClickUpConnection(
  * Guaranteed READ-ONLY.
  */
 export async function fetchAllLiveClickUpData(
-  token: string,
   spaceId: string = CLICKUP_ENGAGEMENT_SPACE_ID
 ): Promise<LiveClickUpResult> {
-  if (!token || !token.trim()) {
-    throw new Error('ClickUp API token is required to fetch live tasks');
-  }
+  const spaceData = await clickUpGet(`/space/${spaceId}`).catch(() => null);
 
-  // 1. Fetch space details
-  const spaceData = await clickUpGet(`/space/${spaceId}`, token).catch(() => null);
-
-  // 2. Fetch folders inside space
-  const foldersRes = await clickUpGet(`/space/${spaceId}/folder`, token).catch(() => ({ folders: [] }));
+  // Folders inside the configured space.
+  const foldersRes = await clickUpGet(`/space/${spaceId}/folder`).catch(() => ({ folders: [] }));
   const folders: ClickUpFolder[] = (foldersRes.folders || []).map((f: any) => ({
     id: f.id,
     name: f.name,
@@ -178,7 +116,7 @@ export async function fetchAllLiveClickUpData(
   }));
 
   // 3. Fetch folderless lists in space
-  const listsRes = await clickUpGet(`/space/${spaceId}/list`, token).catch(() => ({ lists: [] }));
+  const listsRes = await clickUpGet(`/space/${spaceId}/list`).catch(() => ({ lists: [] }));
   const folderlessLists: ClickUpListSummary[] = (listsRes.lists || []).map((l: any) => ({
     id: l.id,
     name: l.name,
@@ -199,7 +137,7 @@ export async function fetchAllLiveClickUpData(
   await Promise.all(
     targetLists.map(async (l) => {
       try {
-        const taskRes = await clickUpGet(`/list/${l.id}/task?subtasks=true&include_closed=true`, token);
+        const taskRes = await clickUpGet(`/list/${l.id}/task?subtasks=true&include_closed=true`);
         const listTasks: any[] = taskRes.tasks || [];
         listTasks.forEach((t) => {
           tasks.push({

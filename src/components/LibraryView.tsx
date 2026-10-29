@@ -9,6 +9,7 @@ import {
   X,
   Camera
 } from 'lucide-react';
+import { MediaFrame } from './MediaFrame';
 
 export const LibraryView: React.FC = () => {
   const { uploads } = useApp();
@@ -92,11 +93,7 @@ export const LibraryView: React.FC = () => {
             >
               <div>
                 <div className="relative aspect-square bg-slate-950 overflow-hidden">
-                  <img
-                    src={item.mediaUrl}
-                    alt={item.id}
-                    className="w-full h-full object-cover"
-                  />
+                  <MediaFrame mediaUrl={item.mediaUrl} label={item.id} className="w-full h-full object-cover" />
 
                   {item.topPick && (
                     <div className="absolute top-2 right-2 bg-amber-400 text-slate-950 text-[10px] font-bold p-1 rounded-full shadow-xs">
@@ -141,12 +138,19 @@ export const LibraryView: React.FC = () => {
             </div>
 
             <div className="rounded-2xl overflow-hidden aspect-video bg-black flex items-center justify-center">
-              <img
-                src={selectedItem.mediaUrl}
-                alt={selectedItem.id}
-                className="max-h-full max-w-full object-contain"
-              />
+              <MediaFrame mediaUrl={selectedItem.mediaUrl} label={selectedItem.id} className="max-h-full max-w-full object-contain" />
             </div>
+            {selectedItem.webViewLink && (
+              <a
+                href={selectedItem.webViewLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs text-indigo-600 font-semibold flex items-center gap-1 hover:underline"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Open in Drive
+              </a>
+            )}
 
             <p className="text-xs text-slate-700 bg-white/60 p-3 rounded-2xl leading-relaxed">
               {selectedItem.note}
