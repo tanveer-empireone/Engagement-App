@@ -47,9 +47,9 @@ const MainContent: React.FC = () => {
 };
 
 const AuthShell: React.FC = () => {
-  const { authReady, googleUser, currentUser } = useApp();
+  const { authReady, rosterReady, googleUser, currentUser } = useApp();
   const shell = selectAppShell({
-    authReady,
+    authReady: authReady && rosterReady,
     hasGoogleUser: Boolean(googleUser),
     person: currentUser
   });

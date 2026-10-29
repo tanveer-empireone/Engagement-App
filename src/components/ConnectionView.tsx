@@ -12,7 +12,6 @@ import {
   FileSpreadsheet,
   HardDrive,
   Layers,
-  Key,
   LogOut,
   AlertCircle,
   Table
@@ -31,8 +30,6 @@ export const ConnectionView: React.FC = () => {
     isFetchingLiveDrive,
     liveSheetsMeta,
     liveDriveData,
-    clickUpToken,
-    setClickUpToken,
     isClickUpConnected,
     isFetchingClickUp,
     liveClickUpData,
@@ -41,7 +38,6 @@ export const ConnectionView: React.FC = () => {
     fetchLiveSheets,
     fetchLiveDrive,
     fetchLiveClickUp,
-    testClickUpToken,
     syncHealth,
     syncLogs,
     uploads,
@@ -53,27 +49,8 @@ export const ConnectionView: React.FC = () => {
     googleToken
   } = useApp();
 
-  const [inputClickUpToken, setInputClickUpToken] = useState(clickUpToken);
-  const [testingClickUp, setTestingClickUp] = useState(false);
-  const [clickUpTestMsg, setClickUpTestMsg] = useState<{ success?: boolean; text?: string } | null>(null);
   const [showInspector, setShowInspector] = useState(false);
   const [showLogs, setShowLogs] = useState(false);
-
-  const handleSaveAndTestClickUp = async () => {
-    if (!inputClickUpToken.trim()) return;
-    setTestingClickUp(true);
-    setClickUpTestMsg(null);
-    try {
-      setClickUpToken(inputClickUpToken.trim());
-      const res = await testClickUpToken(inputClickUpToken.trim());
-      setClickUpTestMsg({ success: res.success, text: res.message });
-      if (res.success) {
-        await fetchLiveClickUp();
-      }
-    } finally {
-      setTestingClickUp(false);
-    }
-  };
 
   return (
     <div className="space-y-4 pb-28 md:pb-12 max-w-4xl mx-auto animate-in fade-in">
@@ -398,44 +375,18 @@ export const ConnectionView: React.FC = () => {
           </div>
         </div>
 
-        {/* ClickUp Token Input */}
         <div className="p-4 rounded-2xl bg-white/70 border border-slate-100 space-y-3">
           <div className="text-xs text-slate-600">
-            Enter your ClickUp Personal API Token (found in <em>ClickUp &gt; Settings &gt; Apps &gt; API Token</em>) to fetch live tasks from the Engagement space:
+            ClickUp is read by the server. The token is not entered in this browser. If ClickUp is not configured, the fetch says so and nothing is written.
           </div>
-
-          <div className="flex flex-col sm:flex-row gap-2">
-            <div className="relative flex-1">
-              <input
-                type="password"
-                placeholder="pk_12345678_..."
-                value={inputClickUpToken}
-                onChange={(e) => setInputClickUpToken(e.target.value)}
-                className="glass-input w-full pl-8 pr-3 py-2 rounded-xl text-xs text-slate-900 font-mono focus:outline-hidden"
-              />
-              <Key className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
-            </div>
-
-            <button
-              onClick={handleSaveAndTestClickUp}
-              disabled={testingClickUp || !inputClickUpToken.trim()}
-              className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold cursor-pointer shadow-xs transition disabled:opacity-50"
-            >
-              {testingClickUp ? 'Connecting...' : 'Connect & Fetch Live'}
-            </button>
-          </div>
-
-          {clickUpTestMsg && (
-            <div
-              className={`p-2.5 rounded-xl text-xs font-medium ${
-                clickUpTestMsg.success
-                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                  : 'bg-rose-50 text-rose-800 border border-rose-200'
-              }`}
-            >
-              {clickUpTestMsg.text}
-            </div>
-          )}
+          <button
+            type="button"
+            onClick={() => void fetchLiveClickUp()}
+            disabled={isFetchingClickUp}
+            className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold cursor-pointer shadow-xs transition disabled:opacity-50"
+          >
+            {isFetchingClickUp ? 'Fetching...' : 'Fetch tasks'}
+          </button>
 
           {liveClickUpData && (
             <div className="pt-2 border-t border-slate-100 text-xs text-slate-600 flex items-center justify-between">

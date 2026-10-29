@@ -11,6 +11,7 @@ import {
   Check,
   X
 } from 'lucide-react';
+import { MediaFrame } from './MediaFrame';
 
 export const ReviewQueueView: React.FC = () => {
   const { uploads, reviewUpload, currentUser, canReview } = useSignedInApp();
@@ -131,11 +132,7 @@ export const ReviewQueueView: React.FC = () => {
             >
               {/* Media Preview */}
               <div className="w-full sm:w-44 h-36 rounded-2xl overflow-hidden bg-slate-900 shrink-0 relative">
-                <img
-                  src={item.mediaUrl}
-                  alt={item.id}
-                  className="w-full h-full object-cover"
-                />
+                <MediaFrame mediaUrl={item.mediaUrl} label={item.id} className="w-full h-full object-cover" />
                 {item.topPick && (
                   <div className="absolute top-2 right-2 bg-amber-400 text-slate-950 font-bold text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
                     <Star className="w-3 h-3 fill-slate-950" />

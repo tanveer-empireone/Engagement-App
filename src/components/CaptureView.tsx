@@ -15,6 +15,7 @@ interface StagedFile {
   size: number;
   type: string;
   url: string;
+  file: File;
   top: boolean;
   done: boolean;
 }
@@ -37,6 +38,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadSuccess, setUploadSuccess] = useState<boolean>(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [eventName, setEventName] = useState<string>('');
   const [isEventMode, setIsEventMode] = useState<boolean>(false);
@@ -61,12 +63,14 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         size: f.size,
         type: f.type,
         url: URL.createObjectURL(f),
+        file: f,
         top: false,
         done: false
       });
     }
     setStagedFiles((prev) => [...prev, ...newItems]);
     setUploadSuccess(false);
+    setUploadError(null);
   };
 
   const toggleStar = (id: string) => {
@@ -89,6 +93,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
     if (pending.length === 0) return;
 
     setIsUploading(true);
+    setUploadError(null);
     try {
       const todayYmd = new Date().toISOString().slice(0, 10);
       await addBatchUploads(
@@ -101,18 +106,22 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           topic,
           spot: 'Production floor',
           mediaType: f.type.startsWith('video/') ? 'Video' : 'Photo',
-          mediaUrl: f.url,
+          file: f.file,
           fileSizeBytes: f.size,
           capturedAt: new Date().toISOString(),
           note: note || `${topic} capture`,
           consentSigned: true,
           nothingConfidential: true,
-          topPick: f.top
+          topPick: f.top,
+          ext: f.name.split('.').pop()
         }))
       );
 
       setStagedFiles((prev) => prev.map((f) => ({ ...f, done: true })));
       setUploadSuccess(true);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Upload failed.';
+      setUploadError(message);
     } finally {
       setIsUploading(false);
     }
@@ -285,6 +294,12 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
             : 'Select photos to upload'}
         </span>
       </button>
+
+      {uploadError && (
+        <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-xs">
+          {uploadError}
+        </div>
+      )}
 
       {/* Success Notification */}
       {uploadSuccess && (

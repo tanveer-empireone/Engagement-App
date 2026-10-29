@@ -27,14 +27,36 @@ test('signed-out visitors stay on the sign-in gate', () => {
   assert.equal(selectAppShell({ authReady: true, hasGoogleUser: false, person: tanveer }), 'signin');
 });
 
-test('a Google account that is not the admin is an Officer and cannot open the admin panel', () => {
+test('a Google account the admin has not added cannot enter', () => {
   const person = resolveSessionPerson(
-    { email: 'officer@empireonecx.com', displayName: 'Pat Officer' },
+    { email: 'person@gmail.com', displayName: 'Pat' },
     [tanveer]
   );
   assert.ok(person);
-  assert.equal(person.Email, 'officer@empireonecx.com');
+  assert.equal(person.Email, 'person@gmail.com');
+  assert.equal(person.Active, false);
+  assert.equal(selectAppShell({ authReady: true, hasGoogleUser: true, person }), 'blocked');
+  assert.equal(canOpenAdminPanel(person), false);
+});
+
+test('an email the admin added signs in as that role and cannot open the admin panel', () => {
+  const person = resolveSessionPerson(
+    { email: 'officer@empireonecx.com', displayName: 'Pat Officer' },
+    [
+      tanveer,
+      {
+        Email: 'officer@empireonecx.com',
+        Name: 'Pat Officer',
+        Role: 'Officer',
+        Site: 'Cebu City',
+        Shift: 'Peak',
+        Active: true
+      }
+    ]
+  );
+  assert.ok(person);
   assert.equal(person.Role, 'Officer');
+  assert.equal(person.Active, true);
   assert.equal(selectAppShell({ authReady: true, hasGoogleUser: true, person }), 'app');
   assert.equal(canOpenAdminPanel(person), false);
 });
@@ -71,8 +93,28 @@ test('an admin can upgrade another Google account to Admin, and that role surviv
   assert.notEqual(person.Email, ADMIN_EMAIL);
 });
 
+test('the founding admin can enter before a roster row exists', () => {
+  const person = resolveSessionPerson({ email: ADMIN_EMAIL, displayName: 'Tanveer' }, []);
+  assert.ok(person);
+  assert.equal(person.Role, 'Admin');
+  assert.equal(person.Active, true);
+  assert.equal(selectAppShell({ authReady: true, hasGoogleUser: true, person }), 'app');
+});
+
 test('admins hide Capture until it is shown, and other roles never see Integrations or the admin panel', () => {
-  const officer = resolveSessionPerson({ email: 'officer@empireonecx.com', displayName: 'Pat' }, []);
+  const officer = resolveSessionPerson(
+    { email: 'officer@empireonecx.com', displayName: 'Pat' },
+    [
+      {
+        Email: 'officer@empireonecx.com',
+        Name: 'Pat',
+        Role: 'Officer',
+        Site: 'Cebu City',
+        Shift: 'Peak',
+        Active: true
+      }
+    ]
+  );
   assert.ok(officer);
   assert.equal(canUseCapture(officer, false), true);
   assert.equal(canSeeIntegrations(officer), false);
