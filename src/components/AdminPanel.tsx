@@ -33,56 +33,60 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4">
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
       <div
         data-testid="admin-panel"
         role="dialog"
         aria-labelledby="admin-panel-title"
-        className="glass-card w-full sm:max-w-3xl max-h-[92vh] overflow-hidden rounded-t-3xl sm:rounded-3xl border border-white/80 shadow-xl flex flex-col"
+        className="glass-card w-full sm:max-w-3xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl border border-white/80 shadow-xl flex flex-col"
       >
-        <div className="px-5 py-4 border-b border-slate-200/70 flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Admin</div>
-            <h2 id="admin-panel-title" className="text-lg font-bold text-slate-900">
-              Engagement settings
-            </h2>
-            <p className="text-[11px] text-slate-500 mt-0.5">
-              Signed in as {app.currentUser.Email}. Changes are saved to the server.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close admin panel"
-            className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="px-5 pt-3 flex gap-1.5 overflow-x-auto">
-          {(
-            [
-              ['people', 'People'],
-              ['records', 'Records'],
-              ['configuration', 'Configuration'],
-              ['sync', 'Sync']
-            ] as const
-          ).map(([id, label]) => (
+        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200/70">
+          <div className="px-5 py-4 flex items-start justify-between gap-3">
+            <div>
+              <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Admin</div>
+              <h2 id="admin-panel-title" className="text-lg font-bold text-slate-900">
+                Engagement settings
+              </h2>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                Signed in as {app.currentUser.Email}. Changes are saved to the server.
+              </p>
+            </div>
             <button
-              key={id}
               type="button"
-              onClick={() => setSection(id)}
-              className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer ${
-                section === id ? 'bg-indigo-600 text-white' : 'bg-white/70 text-slate-600 hover:bg-slate-100'
-              }`}
+              onClick={onClose}
+              aria-label="Close admin panel"
+              className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"
             >
-              {label}
+              <X className="w-4 h-4" />
             </button>
-          ))}
+          </div>
+
+          <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50/80 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {(
+              [
+                ['people', 'People'],
+                ['records', 'Records'],
+                ['configuration', 'Configuration'],
+                ['sync', 'Sync']
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                onClick={() => setSection(id)}
+                className={`px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer shrink-0 transition-all ${
+                  section === id
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'bg-white/80 text-slate-600 hover:text-slate-900 hover:bg-white border border-slate-200/60'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
 
-        <div className="px-5 pt-3">
+        <div className="px-5 py-4 space-y-4">
           <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-xs font-bold text-slate-900">Capture media</div>
@@ -103,16 +107,14 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
           {notice && (
             <div
-              className={`mt-2 p-3 rounded-2xl border text-[11px] ${
+              className={`p-3 rounded-2xl border text-[11px] ${
                 noticeOk ? 'bg-emerald-50 border-emerald-200 text-emerald-900' : 'bg-rose-50 border-rose-200 text-rose-800'
               }`}
             >
               {notice}
             </div>
           )}
-        </div>
 
-        <div className="px-5 py-4 overflow-y-auto">
           {section === 'people' && <PeopleSection show={show} />}
           {section === 'records' && <RecordsSection show={show} />}
           {section === 'configuration' && <ConfigSection show={show} />}
