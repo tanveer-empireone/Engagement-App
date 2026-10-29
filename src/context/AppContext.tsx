@@ -405,16 +405,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.uploads.length > 0) setUploads(result.uploads);
       if (result.directions.length > 0) setDirections(result.directions);
       if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
-      if (result.people.length > 0) {
-        setPeople((prev) => {
-          const incoming = sanitizeDirectory(result.people);
-          const incomingKeys = new Set(incoming.map((p) => normalizeEmail(p.Email)));
-          const keptInactive = prev.filter(
-            (p) => p.Active === false && !incomingKeys.has(normalizeEmail(p.Email))
-          );
-          return sanitizeDirectory([...incoming, ...keptInactive]);
-        });
-      }
+      // The People tab is not an access list. Only emails an admin added on the
+      // server can sign in, so a sheet read must not add or restore anyone.
       if (result.sites.length > 0) setSites(result.sites);
       if (result.topics.length > 0) setTopics(result.topics);
       if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
