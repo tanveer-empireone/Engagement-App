@@ -94,6 +94,7 @@ interface AppContextType {
   syncLogs: SyncLogEntry[];
 
   authReady: boolean;
+  rosterReady: boolean;
   googleUser: User | null;
   googleToken: string | null;
   isGoogleConnected: boolean;
@@ -200,6 +201,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const isAutoStart = typeof window !== 'undefined' && window.location.search.includes('autostart=1');
   const [authReady, setAuthReady] = useState(() => isAutoStart);
+  const [rosterReady, setRosterReady] = useState(false);
   const [googleUser, setGoogleUser] = useState<User | null>(() => (isAutoStart ? ({
     email: 'tanveer@empireonecx.com',
     displayName: 'Tanveer',
@@ -243,6 +245,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .catch((err) => {
         console.warn('Could not fetch server state:', err);
+      })
+      .finally(() => {
+        if (mounted) setRosterReady(true);
       });
     return () => {
       mounted = false;
@@ -1084,6 +1089,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncLedger,
         syncLogs,
         authReady,
+        rosterReady,
         googleUser,
         googleToken,
         isGoogleConnected: Boolean(googleUser && googleToken),

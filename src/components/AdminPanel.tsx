@@ -151,7 +151,7 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         <div>
           <h3 className="text-sm font-bold text-slate-900">Add a user</h3>
           <p className="text-[11px] text-slate-500">
-            Set a role before they sign in. Choosing Admin gives them this panel and Integrations. tanveer@empireonecx.com stays an admin.
+            Only emails added here can sign in. Choosing Admin gives them this panel and Integrations. tanveer@empireonecx.com stays an admin.
           </p>
         </div>
         <div className="grid sm:grid-cols-2 gap-2">

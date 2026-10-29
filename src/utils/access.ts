@@ -64,11 +64,24 @@ export interface GoogleIdentity {
 /**
  * Map a Google account onto the directory.
  * The signed-in email is the identity. There is no fallback to another person.
+ * An email an admin has not added stays inactive, so it cannot open the app.
+ * The founding admin email can still enter.
  */
 export function resolveSessionPerson(identity: GoogleIdentity, directory: Person[]): Person | null {
   const email = identity.email.trim();
   if (!email) return null;
   const existing = directory.find((p) => normalizeEmail(p.Email) === normalizeEmail(email));
+  if (!existing && !isAdminEmail(email)) {
+    return sanitizePerson({
+      Email: email,
+      Name: identity.displayName || email.split('@')[0],
+      Role: 'Officer',
+      Site: 'Cebu City',
+      Shift: 'Peak',
+      Active: false,
+      Avatar: identity.photoURL || undefined
+    });
+  }
   return sanitizePerson({
     Email: existing?.Email || email,
     Name: existing?.Name || identity.displayName || email.split('@')[0],
