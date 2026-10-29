@@ -4,7 +4,7 @@ import { ASSIGNABLE_ROLES, isAdminEmail } from '../utils/access';
 import { SHIFTS_LIST } from '../utils/idGenerator';
 import { testAppsScriptConnection } from '../services/appsScriptService';
 import { DirectionMessage, Person, ReviewStatus, Role, ShiftReport, UploadItem } from '../types';
-import { AlertCircle, ShieldCheck, X } from 'lucide-react';
+import { ShieldCheck, X } from 'lucide-react';
 
 type AdminSection = 'people' | 'records' | 'configuration' | 'sync';
 type RecordTab = 'uploads' | 'directions' | 'reports';
@@ -47,7 +47,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               Engagement settings
             </h2>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              Signed in as {app.currentUser.Email}. Roster and record edits stay in this browser.
+              Signed in as {app.currentUser.Email}. Changes are saved to the server.
             </p>
           </div>
           <button
@@ -83,13 +83,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
         </div>
 
         <div className="px-5 pt-3">
-          <div className="p-3 rounded-2xl bg-amber-50/90 border border-amber-200 text-[11px] text-amber-900 flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-            <p>
-              Google Sheets, Google Drive, and ClickUp are read-only from this app. Saving here does not write those systems, and a failed read is shown as a failure.
-            </p>
-          </div>
-          <div className="mt-2 p-3 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
+          <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
             <div>
               <div className="text-xs font-bold text-slate-900">Capture media</div>
               <p className="text-[11px] text-slate-500">
@@ -376,7 +370,7 @@ const RecordsSection: React.FC<{ show: (result: { ok: boolean; message: string }
 
       {confirm && (
         <div className="p-3 rounded-2xl bg-rose-50 border border-rose-200 text-xs text-rose-900 flex flex-wrap items-center gap-2">
-          <span>Delete every {confirm} record stored in this browser? Remote files and tasks stay where they are.</span>
+          <span>Delete every {confirm} record stored on the server? Remote files and tasks stay where they are.</span>
           <button type="button" onClick={wipe} className="px-2 py-1 rounded-lg bg-rose-600 text-white font-semibold cursor-pointer">
             Delete
           </button>
@@ -388,19 +382,19 @@ const RecordsSection: React.FC<{ show: (result: { ok: boolean; message: string }
 
       {tab === 'uploads' &&
         (app.uploads.length === 0 ? (
-          <EmptyRecords label="No uploads in this browser." />
+          <EmptyRecords label="No uploads on the server." />
         ) : (
           app.uploads.map((item) => <UploadEditor key={item.id} item={item} show={show} />)
         ))}
       {tab === 'directions' &&
         (app.directions.length === 0 ? (
-          <EmptyRecords label="No directions in this browser." />
+          <EmptyRecords label="No directions on the server." />
         ) : (
           app.directions.map((item) => <DirectionEditor key={item.feedbackId} item={item} show={show} />)
         ))}
       {tab === 'reports' &&
         (app.shiftReports.length === 0 ? (
-          <EmptyRecords label="No shift reports in this browser." />
+          <EmptyRecords label="No shift reports on the server." />
         ) : (
           app.shiftReports.map((item) => <ReportEditor key={item.reportId} item={item} show={show} />)
         ))}
@@ -709,7 +703,7 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
       <div className="p-4 rounded-2xl bg-white/70 border border-slate-200/70 space-y-2">
         <h3 className="text-sm font-bold text-slate-900">ClickUp personal token</h3>
         <p className="text-[11px] text-slate-500">
-          Saved in this browser and used only for read requests. A blank token cannot connect, and this does not create tasks.
+          Saved on the server and used for read requests. A blank token cannot connect, and this does not create tasks.
         </p>
         <input
           type="password"

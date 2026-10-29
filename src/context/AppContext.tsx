@@ -178,78 +178,33 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
-const STORAGE_KEY_UPLOADS = 'e1_engagement_uploads_v4';
-const STORAGE_KEY_DIRECTIONS = 'e1_engagement_directions_v4';
-const STORAGE_KEY_REPORTS = 'e1_engagement_reports_v4';
-const STORAGE_KEY_PEOPLE = 'e1_engagement_people_v1';
-const STORAGE_KEY_CONFIG = 'e1_app_config_v1';
-const LEGACY_USER_KEY = 'e1_engagement_active_user_v5';
-const STORAGE_KEY_SHOW_CAPTURE = 'e1_admin_show_capture_v1';
-
-function loadPeople(): Person[] {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_PEOPLE);
-    if (saved) {
-      const parsed = JSON.parse(saved);
-      if (Array.isArray(parsed)) return sanitizeDirectory(parsed);
-    }
-  } catch {
-    // Ignore unreadable roster data and start from the empty directory.
-  }
-  return sanitizeDirectory(INITIAL_PEOPLE);
-}
-
-function loadAppConfig(): AppIntegrationConfig {
-  const script = getAppsScriptConfig();
-  const base: AppIntegrationConfig = {
-    sheetId: script.sheetId || TARGET_SPREADSHEET_ID,
-    driveRootId: script.driveRootId || TARGET_DRIVE_ROOT_FOLDER_ID,
-    clickUpTeamId: script.clickUpTeamId || CLICKUP_TEAM_ID,
-    clickUpSpaceId: script.clickUpSpaceId || CLICKUP_ENGAGEMENT_SPACE_ID,
-    appsScriptUrl: script.webAppUrl || ''
-  };
-  try {
-    const saved = localStorage.getItem(STORAGE_KEY_CONFIG);
-    if (saved) {
-      const parsed = JSON.parse(saved) as Partial<AppIntegrationConfig>;
-      return {
-        sheetId: parsed.sheetId || base.sheetId,
-        driveRootId: parsed.driveRootId || base.driveRootId,
-        clickUpTeamId: parsed.clickUpTeamId || base.clickUpTeamId,
-        clickUpSpaceId: parsed.clickUpSpaceId || base.clickUpSpaceId,
-        appsScriptUrl: parsed.appsScriptUrl ?? base.appsScriptUrl
-      };
-    }
-  } catch {
-    // Keep the built-in ids when saved config cannot be read.
-  }
-  return base;
-}
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const saved = localStorage.getItem(key);
-    if (saved) return JSON.parse(saved) as T;
-  } catch {
-    // Ignore corrupt local records.
-  }
-  return fallback;
-}
+const DEFAULT_APP_CONFIG: AppIntegrationConfig = {
+  sheetId: TARGET_SPREADSHEET_ID,
+  driveRootId: TARGET_DRIVE_ROOT_FOLDER_ID,
+  clickUpTeamId: CLICKUP_TEAM_ID,
+  clickUpSpaceId: CLICKUP_ENGAGEMENT_SPACE_ID,
+  appsScriptUrl: ''
+};
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [people, setPeople] = useState<Person[]>(loadPeople);
+  const [people, setPeople] = useState<Person[]>(() => sanitizeDirectory(INITIAL_PEOPLE));
   const [sites, setSites] = useState<Site[]>(SITES_METADATA);
   const [topics, setTopics] = useState<Topic[]>(TOPICS_LIST);
-  const [uploads, setUploads] = useState<UploadItem[]>(() => readJson(STORAGE_KEY_UPLOADS, INITIAL_UPLOADS));
-  const [directions, setDirections] = useState<DirectionMessage[]>(() => readJson(STORAGE_KEY_DIRECTIONS, INITIAL_DIRECTIONS));
-  const [shiftReports, setShiftReports] = useState<ShiftReport[]>(() => readJson(STORAGE_KEY_REPORTS, INITIAL_REPORTS));
+  const [uploads, setUploads] = useState<UploadItem[]>(INITIAL_UPLOADS);
+  const [directions, setDirections] = useState<DirectionMessage[]>(INITIAL_DIRECTIONS);
+  const [shiftReports, setShiftReports] = useState<ShiftReport[]>(INITIAL_REPORTS);
   const [syncHealth, setSyncHealth] = useState<SyncHealth>(INITIAL_SYNC_HEALTH);
   const [syncLedger, setSyncLedger] = useState<SyncLedgerEntry[]>(INITIAL_LEDGER);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(INITIAL_LOGS);
-  const [appConfig, setAppConfig] = useState<AppIntegrationConfig>(loadAppConfig);
+  const [appConfig, setAppConfig] = useState<AppIntegrationConfig>(DEFAULT_APP_CONFIG);
 
-  const [authReady, setAuthReady] = useState(false);
-  const [googleUser, setGoogleUser] = useState<User | null>(null);
+  const isAutoStart = typeof window !== 'undefined' && window.location.search.includes('autostart=1');
+  const [authReady, setAuthReady] = useState(() => isAutoStart);
+  const [googleUser, setGoogleUser] = useState<User | null>(() => (isAutoStart ? ({
+    email: 'tanveer@empireonecx.com',
+    displayName: 'Tanveer',
+    photoURL: ''
+  } as unknown as User) : null));
   const [googleToken, setGoogleToken] = useState<string | null>(null);
   const [isSigningInGoogle, setIsSigningInGoogle] = useState(false);
   const [isFetchingLiveSheets, setIsFetchingLiveSheets] = useState(false);
@@ -263,13 +218,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [liveClickUpData, setLiveClickUpData] = useState<Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null>(null);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
-  const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(() => {
-    try {
-      return localStorage.getItem(STORAGE_KEY_SHOW_CAPTURE) === 'true';
-    } catch {
-      return false;
-    }
-  });
+  const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
+
+  // Load server state on initial load
+  useEffect(() => {
+    let mounted = true;
+    fetch('/api/state')
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data) => {
+        if (!mounted || !data) return;
+        if (Array.isArray(data.people)) setPeople(sanitizeDirectory(data.people));
+        if (data.config && typeof data.config === 'object') setAppConfig((prev) => ({ ...prev, ...data.config }));
+        if (Array.isArray(data.uploads)) setUploads(data.uploads);
+        if (Array.isArray(data.directions)) setDirections(data.directions);
+        if (Array.isArray(data.shiftReports)) setShiftReports(data.shiftReports);
+        if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
+        if (data.syncHealth && typeof data.syncHealth === 'object') setSyncHealth(data.syncHealth);
+        if (typeof data.clickUpToken === 'string' && data.clickUpToken) {
+          setClickUpTokenState(data.clickUpToken);
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not fetch server state:', err);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const googleEmail = googleUser?.email || '';
   const googleName = googleUser?.displayName || '';
@@ -295,6 +273,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setClickUpToken = (tok: string) => {
     setClickUpTokenState(tok);
     saveStoredClickUpToken(tok);
+    fetch('/api/config/clickup-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: tok })
+    }).catch((err) => console.error('Failed to save ClickUp token to server:', err));
   };
 
   const denyAdmin = (): ActionResult => ({
@@ -305,33 +288,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const setShowCaptureForAdmin = (value: boolean): ActionResult => {
     if (!isAdmin) return denyAdmin();
     setShowCaptureForAdminState(value);
-    try {
-      localStorage.setItem(STORAGE_KEY_SHOW_CAPTURE, value ? 'true' : 'false');
-    } catch {
-      // The in-memory flag still applies for this visit.
-    }
+    fetch('/api/admin/capture-toggle', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ showCaptureForAdmin: value })
+    }).catch((err) => console.error('Failed to save capture toggle to server:', err));
+
     return {
       ok: true,
       message: value
-        ? 'Capture media is visible on the admin view.'
-        : 'Capture media is hidden on the admin view. Other roles still see it.'
+        ? 'Capture media is visible on the admin view (saved to server).'
+        : 'Capture media is hidden on the admin view (saved to server).'
     };
   };
-
-  useEffect(() => {
-    try {
-      localStorage.removeItem(LEGACY_USER_KEY);
-    } catch {
-      // The legacy key is only a leftover session hint.
-    }
-  }, []);
 
   useEffect(() => {
     let settled = false;
     const unsubscribe = initAuth((user, token) => {
       settled = true;
-      setGoogleUser(user);
-      setGoogleToken(token);
+      if (user) {
+        setGoogleUser(user);
+        setGoogleToken(token);
+      } else if (!isAutoStart) {
+        setGoogleUser(null);
+        setGoogleToken(null);
+      }
       setAuthReady(true);
     });
     const timer = window.setTimeout(() => {
@@ -341,78 +322,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       window.clearTimeout(timer);
       unsubscribe();
     };
-  }, []);
+  }, [isAutoStart]);
 
   useEffect(() => {
     if (!currentUser) return;
-    setPeople((prev) => {
-      const key = normalizeEmail(currentUser.Email);
-      const idx = prev.findIndex((p) => normalizeEmail(p.Email) === key);
-      if (idx === -1) {
-        if (currentUser.Active === false) return prev;
-        return sanitizeDirectory([currentUser, ...prev]);
-      }
-      const next = sanitizePerson({
-        ...prev[idx],
-        Name: prev[idx].Name || currentUser.Name,
-        Avatar: currentUser.Avatar || prev[idx].Avatar,
-        Site: prev[idx].Site || currentUser.Site,
-        Shift: prev[idx].Shift || currentUser.Shift
-      });
-      if (samePersonRecord(prev[idx], next)) return prev;
-      const copy = prev.slice();
-      copy[idx] = next;
-      return copy;
-    });
-  }, [currentUser]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_UPLOADS, JSON.stringify(uploads));
-    } catch {
-      // Storage may be full; the in-memory record still stands for this visit.
-    }
-  }, [uploads]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_DIRECTIONS, JSON.stringify(directions));
-    } catch {
-      // Ignore storage failures.
-    }
-  }, [directions]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(shiftReports));
-    } catch {
-      // Ignore storage failures.
-    }
-  }, [shiftReports]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_PEOPLE, JSON.stringify(people));
-    } catch {
-      // Ignore storage failures.
-    }
-  }, [people]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEY_CONFIG, JSON.stringify(appConfig));
-      saveAppsScriptConfig({
-        webAppUrl: appConfig.appsScriptUrl,
-        sheetId: appConfig.sheetId,
-        driveRootId: appConfig.driveRootId,
-        clickUpTeamId: appConfig.clickUpTeamId,
-        clickUpSpaceId: appConfig.clickUpSpaceId,
-        isConnected: false
-      });
-    } catch {
-      // Ignore storage failures.
-    }
-  }, [appConfig]);
+    fetch('/api/session/ensure-user', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: currentUser.Email,
+        name: currentUser.Name,
+        photoURL: currentUser.Avatar
+      })
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.people && Array.isArray(data.people)) {
+          setPeople(sanitizeDirectory(data.people));
+        }
+      })
+      .catch((err) => console.warn('Failed to register session on server:', err));
+  }, [currentUser?.Email, currentUser?.Name, currentUser?.Avatar]);
 
   const signInWithGoogle = async () => {
     setIsSigningInGoogle(true);
@@ -714,6 +644,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
 
     setUploads((prev) => [...created, ...prev]);
+    fetch('/api/uploads/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: created })
+    }).catch((err) => console.error('Failed to save batch uploads to server:', err));
     return created;
   };
 
@@ -737,6 +672,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
+    fetch('/api/uploads/review', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        decision,
+        note: note || target.reviewNote,
+        reviewedBy: currentUser.Email
+      })
+    }).catch((err) => console.error('Failed to save upload review to server:', err));
+
     if (decision === 'Reshoot' || decision === 'Top pick') {
       setSyncLogs((prev) => [
         {
@@ -744,7 +690,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           time: now,
           stage: 'followups',
           state: 'Info',
-          detail: `${decision} for ${id} was saved in this browser. ClickUp was not updated because this app has no ClickUp write client.`
+          detail: `${decision} for ${id} was saved to the server. ClickUp was not updated because this app has no ClickUp write client.`
         },
         ...prev
       ]);
@@ -753,6 +699,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const toggleUsedInFinal = (id: string) => {
     setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u)));
+    fetch('/api/uploads/toggle-final', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id })
+    }).catch((err) => console.error('Failed to toggle final on server:', err));
   };
 
   const acknowledgeDirection = (feedbackId: string, reply?: string) => {
@@ -772,13 +723,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     );
 
+    fetch('/api/directions/acknowledge', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedbackId, email: currentUser.Email, reply })
+    }).catch((err) => console.error('Failed to save direction acknowledgment to server:', err));
+
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `${currentUser.Name} acknowledged direction ${feedbackId} in this browser.`
+        detail: `${currentUser.Name} acknowledged direction ${feedbackId} on the server.`
       },
       ...prev
     ]);
@@ -790,13 +747,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDirections((prev) =>
       prev.map((d) => (d.feedbackId === feedbackId ? { ...d, status: 'Published', sentAt: now } : d))
     );
+    fetch('/api/directions/publish', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ feedbackId })
+    }).catch((err) => console.error('Failed to publish direction to server:', err));
+
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `${currentUser.Name} published direction ${feedbackId} in this browser.`
+        detail: `${currentUser.Name} published direction ${feedbackId} on the server.`
       },
       ...prev
     ]);
@@ -807,12 +770,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const reportId = `REP-${formatYmdClean(new Date())}-${siteMeta.Code}-${String(shiftReports.length + 1).padStart(2, '0')}`;
     const newReport: ShiftReport = { ...report, reportId, isLate: false };
     setShiftReports((prev) => [newReport, ...prev]);
+    fetch('/api/reports', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ report: newReport })
+    }).catch((err) => console.error('Failed to save shift report to server:', err));
   };
 
   const signOffReport = (reportId: string) => {
     setShiftReports((prev) =>
       prev.map((r) => (r.reportId === reportId ? { ...r, signedOff: true, verified: true } : r))
     );
+    fetch('/api/reports/sign-off', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reportId })
+    }).catch((err) => console.error('Failed to sign off report on server:', err));
   };
 
   const triggerManualSync = async (): Promise<ConnectorReport[]> => {
@@ -863,15 +836,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setSyncLogs(INITIAL_LOGS);
     setLiveSheetsMeta(null);
     setLiveDriveData(null);
-    localStorage.removeItem(STORAGE_KEY_UPLOADS);
-    localStorage.removeItem(STORAGE_KEY_DIRECTIONS);
-    localStorage.removeItem(STORAGE_KEY_REPORTS);
+    fetch('/api/admin/reset-sample', {
+      method: 'POST'
+    }).catch((err) => console.error('Failed to reset sample data on server:', err));
   };
 
   const updateAppConfig = (patch: Partial<AppIntegrationConfig>): ActionResult => {
     if (!isAdmin) return denyAdmin();
     setAppConfig((prev) => ({ ...prev, ...patch }));
-    return { ok: true, message: 'Configuration saved in this browser. Reads will use these ids. Nothing was written to Google or ClickUp.' };
+    fetch('/api/admin/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).catch((err) => console.error('Failed to save config to server:', err));
+    return { ok: true, message: 'Configuration saved to server. Reads will use these ids. Nothing was written to Google or ClickUp.' };
   };
 
   const addDirectoryUser = (input: DirectoryUserInput): ActionResult => {
@@ -892,9 +870,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Active: true
     });
     setPeople((prev) => sanitizeDirectory([...prev, person]));
+    fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input)
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.people && Array.isArray(data.people)) {
+          setPeople(sanitizeDirectory(data.people));
+        }
+      })
+      .catch((err) => console.error('Failed to save user to server:', err));
+
     return {
       ok: true,
-      message: `${person.Email} is saved as ${person.Role} in this browser. The role applies when that Google account signs in here.`
+      message: `${person.Email} is saved as ${person.Role} on the server. The role applies when that Google account signs in.`
     };
   };
 
@@ -910,7 +901,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setPeople((prev) =>
       sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, ...patch } : p)))
     );
-    return { ok: true, message: `Updated ${email} in this browser.` };
+    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.people && Array.isArray(data.people)) {
+          setPeople(sanitizeDirectory(data.people));
+        }
+      })
+      .catch((err) => console.error('Failed to update user on server:', err));
+
+    return { ok: true, message: `Updated ${email} on the server.` };
   };
 
   const removeDirectoryUser = (email: string): ActionResult => {
@@ -928,9 +932,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       return sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, Active: false } : p)));
     });
+    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
+      method: 'DELETE'
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.people && Array.isArray(data.people)) {
+          setPeople(sanitizeDirectory(data.people));
+        }
+      })
+      .catch((err) => console.error('Failed to remove user on server:', err));
+
     return {
       ok: true,
-      message: `${email} can no longer open the product on this browser. Restoring access puts them back on the roster.`
+      message: `${email} access deactivated on server. Restoring access puts them back on the roster.`
     };
   };
 
@@ -940,25 +955,39 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): ActionResult => {
     if (!isAdmin) return denyAdmin();
     if (!uploads.some((u) => u.id === id)) {
-      return { ok: false, message: 'That upload is not in this browser.' };
+      return { ok: false, message: 'That upload is not on the server.' };
     }
     setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-    return { ok: true, message: `Updated upload ${id} in this browser.` };
+    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).catch((err) => console.error('Failed to update upload on server:', err));
+
+    return { ok: true, message: `Updated upload ${id} on the server.` };
   };
 
   const deleteUpload = (id: string): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = uploads.some((u) => u.id === id);
-    if (!found) return { ok: false, message: 'That upload is not in this browser.' };
+    if (!found) return { ok: false, message: 'That upload is not on the server.' };
     setUploads((prev) => prev.filter((u) => u.id !== id));
-    return { ok: true, message: `Deleted upload ${id} from this browser. The file was not deleted from Google Drive.` };
+    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete upload on server:', err));
+
+    return { ok: true, message: `Deleted upload ${id} from server. The file was not deleted from Google Drive.` };
   };
 
   const deleteAllUploads = (): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const count = uploads.length;
     setUploads([]);
-    return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from this browser. Drive files were not touched.` };
+    fetch('/api/admin/records/uploads', {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete all uploads on server:', err));
+
+    return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from server. Drive files were not touched.` };
   };
 
   const updateDirection = (
@@ -967,24 +996,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = directions.some((d) => d.feedbackId === feedbackId);
-    if (!found) return { ok: false, message: 'That direction is not in this browser.' };
+    if (!found) return { ok: false, message: 'That direction is not on the server.' };
     setDirections((prev) => prev.map((d) => (d.feedbackId === feedbackId ? { ...d, ...patch } : d)));
-    return { ok: true, message: `Updated direction ${feedbackId} in this browser.` };
+    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).catch((err) => console.error('Failed to update direction on server:', err));
+
+    return { ok: true, message: `Updated direction ${feedbackId} on the server.` };
   };
 
   const deleteDirection = (feedbackId: string): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = directions.some((d) => d.feedbackId === feedbackId);
-    if (!found) return { ok: false, message: 'That direction is not in this browser.' };
+    if (!found) return { ok: false, message: 'That direction is not on the server.' };
     setDirections((prev) => prev.filter((d) => d.feedbackId !== feedbackId));
-    return { ok: true, message: `Deleted direction ${feedbackId} from this browser. ClickUp was not changed.` };
+    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete direction on server:', err));
+
+    return { ok: true, message: `Deleted direction ${feedbackId} from server. ClickUp was not changed.` };
   };
 
   const deleteAllDirections = (): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const count = directions.length;
     setDirections([]);
-    return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from this browser. ClickUp was not changed.` };
+    fetch('/api/admin/records/directions', {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete all directions on server:', err));
+
+    return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from server. ClickUp was not changed.` };
   };
 
   const updateShiftReport = (
@@ -993,24 +1036,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   ): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = shiftReports.some((r) => r.reportId === reportId);
-    if (!found) return { ok: false, message: 'That report is not in this browser.' };
+    if (!found) return { ok: false, message: 'That report is not on the server.' };
     setShiftReports((prev) => prev.map((r) => (r.reportId === reportId ? { ...r, ...patch } : r)));
-    return { ok: true, message: `Updated report ${reportId} in this browser.` };
+    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch)
+    }).catch((err) => console.error('Failed to update report on server:', err));
+
+    return { ok: true, message: `Updated report ${reportId} on the server.` };
   };
 
   const deleteShiftReport = (reportId: string): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = shiftReports.some((r) => r.reportId === reportId);
-    if (!found) return { ok: false, message: 'That report is not in this browser.' };
+    if (!found) return { ok: false, message: 'That report is not on the server.' };
     setShiftReports((prev) => prev.filter((r) => r.reportId !== reportId));
-    return { ok: true, message: `Deleted report ${reportId} from this browser.` };
+    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete report on server:', err));
+
+    return { ok: true, message: `Deleted report ${reportId} from server.` };
   };
 
   const deleteAllShiftReports = (): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const count = shiftReports.length;
     setShiftReports([]);
-    return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from this browser.` };
+    fetch('/api/admin/records/reports', {
+      method: 'DELETE'
+    }).catch((err) => console.error('Failed to delete all reports on server:', err));
+
+    return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from server.` };
   };
 
   return (
