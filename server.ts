@@ -191,10 +191,19 @@ async function startServer() {
     const existingIndex = store.people.findIndex((p) => normalizeEmail(p.Email) === key);
 
     if (existingIndex === -1) {
+      if (key !== ADMIN_EMAIL) {
+        res.status(403).json({
+          ok: false,
+          allowed: false,
+          people: store.people,
+          message: 'This email is not on the roster. An admin has to add it before sign-in.'
+        });
+        return;
+      }
       const newPerson: PersonRecord = {
         Email: email.trim(),
         Name: (name && String(name).trim()) || email.split('@')[0],
-        Role: key === ADMIN_EMAIL ? 'Admin' : 'Officer',
+        Role: 'Admin',
         Site: 'Cebu City',
         Shift: 'Peak',
         Active: true,

@@ -94,6 +94,7 @@ interface AppContextType {
   syncLogs: SyncLogEntry[];
 
   authReady: boolean;
+  rosterReady: boolean;
   googleUser: User | null;
   googleToken: string | null;
   isGoogleConnected: boolean;
@@ -200,6 +201,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const isAutoStart = typeof window !== 'undefined' && window.location.search.includes('autostart=1');
   const [authReady, setAuthReady] = useState(() => isAutoStart);
+  const [rosterReady, setRosterReady] = useState(false);
   const [googleUser, setGoogleUser] = useState<User | null>(() => (isAutoStart ? ({
     email: 'tanveer@empireonecx.com',
     displayName: 'Tanveer',
@@ -243,6 +245,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
       .catch((err) => {
         console.warn('Could not fetch server state:', err);
+      })
+      .finally(() => {
+        if (mounted) setRosterReady(true);
       });
     return () => {
       mounted = false;
@@ -400,16 +405,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.uploads.length > 0) setUploads(result.uploads);
       if (result.directions.length > 0) setDirections(result.directions);
       if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
-      if (result.people.length > 0) {
-        setPeople((prev) => {
-          const incoming = sanitizeDirectory(result.people);
-          const incomingKeys = new Set(incoming.map((p) => normalizeEmail(p.Email)));
-          const keptInactive = prev.filter(
-            (p) => p.Active === false && !incomingKeys.has(normalizeEmail(p.Email))
-          );
-          return sanitizeDirectory([...incoming, ...keptInactive]);
-        });
-      }
+      // The People tab is not an access list. Only emails an admin added on the
+      // server can sign in, so a sheet read must not add or restore anyone.
       if (result.sites.length > 0) setSites(result.sites);
       if (result.topics.length > 0) setTopics(result.topics);
       if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
@@ -1084,6 +1081,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         syncLedger,
         syncLogs,
         authReady,
+        rosterReady,
         googleUser,
         googleToken,
         isGoogleConnected: Boolean(googleUser && googleToken),

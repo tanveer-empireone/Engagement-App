@@ -42,7 +42,7 @@ export const SignInScreen: React.FC = () => {
 
         <div className="mt-4 p-3 rounded-2xl bg-indigo-50/80 border border-indigo-100 flex items-start gap-2 text-[11px] text-indigo-900">
           <ShieldCheck className="w-4 h-4 text-indigo-600 shrink-0 mt-0.5" />
-          <p>Use your EmpireOne Google account. A cancelled popup leaves the app closed.</p>
+          <p>Only an email an admin has added can open the app. A cancelled popup leaves the app closed.</p>
         </div>
 
         {liveError && (
@@ -82,7 +82,9 @@ export const SignInScreen: React.FC = () => {
 };
 
 export const BlockedScreen: React.FC = () => {
-  const { currentUser, signOutGoogle } = useApp();
+  const { currentUser, people, signOutGoogle } = useApp();
+  const email = currentUser?.Email || '';
+  const onRoster = people.some((person) => person.Email.trim().toLowerCase() === email.trim().toLowerCase());
 
   return (
     <div data-testid="access-blocked" className="min-h-screen flex items-center justify-center px-4">
@@ -90,10 +92,12 @@ export const BlockedScreen: React.FC = () => {
         <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-900 text-white font-bold flex items-center justify-center">
           E1
         </div>
-        <h1 className="mt-4 text-lg font-bold text-slate-900">Access removed</h1>
+        <h1 className="mt-4 text-lg font-bold text-slate-900">{onRoster ? 'Access removed' : 'Not on the roster'}</h1>
         <p className="mt-2 text-xs text-slate-500 leading-relaxed">
-          {currentUser?.Email || 'This Google account'} is signed in, but an admin removed access on this browser.
-          The rest of Engagement Capture stays closed until access is restored.
+          {email || 'This Google account'} is signed in with Google
+          {onRoster
+            ? ', but an admin has turned access off. Engagement Capture stays closed until an admin restores it.'
+            : ', but an admin has not added this email. Engagement Capture stays closed until an admin adds it.'}
         </p>
         <button
           type="button"
