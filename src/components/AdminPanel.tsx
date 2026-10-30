@@ -99,7 +99,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <button
               type="button"
               data-testid="toggle-admin-capture"
-              onClick={() => show(app.setShowCaptureForAdmin(!app.showCaptureForAdmin))}
+              onClick={() => void Promise.resolve(app.setShowCaptureForAdmin(!app.showCaptureForAdmin)).then(show)}
               className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
             >
               {app.showCaptureForAdmin ? 'Hide Capture' : 'Show Capture'}
@@ -139,13 +139,14 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         className="p-4 rounded-2xl bg-white/70 border border-slate-200/70 space-y-3"
         onSubmit={(event) => {
           event.preventDefault();
-          const result = addDirectoryUser({ email, name, role, site, shift });
-          show(result);
-          if (result.ok) {
-            setEmail('');
-            setName('');
-            setRole('Officer');
-          }
+          void addDirectoryUser({ email, name, role, site, shift }).then((result) => {
+            show(result);
+            if (result.ok) {
+              setEmail('');
+              setName('');
+              setRole('Officer');
+            }
+          });
         }}
       >
         <div>
@@ -225,8 +226,8 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
             key={person.Email}
             person={person}
             sites={sites.map((item) => item.SiteName)}
-            onUpdate={(patch) => show(updateDirectoryUser(person.Email, patch))}
-            onRemove={() => show(removeDirectoryUser(person.Email))}
+            onUpdate={(patch) => void updateDirectoryUser(person.Email, patch).then(show)}
+            onRemove={() => void removeDirectoryUser(person.Email).then(show)}
           />
         ))}
       </div>
@@ -775,7 +776,7 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
         className="space-y-3"
         onSubmit={(event) => {
           event.preventDefault();
-          show(updateAppConfig(draft));
+          void Promise.resolve(updateAppConfig(draft)).then(show);
         }}
       >
         {field('sheetId', 'Google Sheet id')}

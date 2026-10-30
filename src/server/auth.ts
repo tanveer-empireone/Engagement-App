@@ -42,13 +42,25 @@ export function createCachedVerifier(verify: TokenVerifier): TokenVerifier {
 }
 
 export function firebaseAdminConfigured(): boolean {
-  return Boolean(process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  return Boolean(
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+      process.env.FIREBASE_PROJECT_ID
+  );
 }
 
-export async function verifyWithFirebaseAdmin(token: string): Promise<VerifiedIdentity | null> {
-  if (!firebaseAdminConfigured()) {
+/**
+ * Verify a Firebase ID token.
+ * A service account is used when it is configured. Otherwise the Firebase project id
+ * is enough: signature checks use Google's public keys, not a private credential.
+ */
+export async function verifyWithFirebaseAdmin(token: string, projectId?: string): Promise<VerifiedIdentity | null> {
+  const resolvedProject = (projectId || process.env.FIREBASE_PROJECT_ID || '').trim();
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  const hasCredentialFile = Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  if (!serviceAccount && !hasCredentialFile && !resolvedProject) {
     throw new ServiceUnavailableError(
-      'Firebase admin credentials are not configured. Set FIREBASE_SERVICE_ACCOUNT_JSON or GOOGLE_APPLICATION_CREDENTIALS.'
+      'Firebase admin credentials are not configured. Set FIREBASE_PROJECT_ID, FIREBASE_SERVICE_ACCOUNT_JSON, or GOOGLE_APPLICATION_CREDENTIALS.'
     );
   }
   let admin: any;
@@ -60,18 +72,19 @@ export async function verifyWithFirebaseAdmin(token: string): Promise<VerifiedId
   }
   const appModule = admin.default || admin;
   if (!appModule.apps?.length) {
-    const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-    if (raw) {
-      const creds = JSON.parse(raw) as { project_id?: string; client_email: string; private_key: string };
+    if (serviceAccount) {
+      const creds = JSON.parse(serviceAccount) as { project_id?: string; client_email: string; private_key: string };
       appModule.initializeApp({
         credential: appModule.credential.cert(creds),
-        projectId: process.env.FIREBASE_PROJECT_ID || creds.project_id
+        projectId: resolvedProject || creds.project_id
       });
-    } else {
+    } else if (hasCredentialFile) {
       appModule.initializeApp({
         credential: appModule.credential.applicationDefault(),
-        projectId: process.env.FIREBASE_PROJECT_ID
+        projectId: resolvedProject || undefined
       });
+    } else {
+      appModule.initializeApp({ projectId: resolvedProject });
     }
   }
   try {
