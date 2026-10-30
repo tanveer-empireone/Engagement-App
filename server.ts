@@ -1,4 +1,5 @@
 import express from 'express';
+import http from 'http';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
@@ -138,6 +139,13 @@ async function startServer() {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.static(path.resolve(__dirname, 'public')));
+
+  // Close each document response. A localhost tunnel that reuses a socket
+  // Node already finished reports ERR_EMPTY_RESPONSE (-324) in Chrome.
+  app.use((req, res, next) => {
+    if (!req.headers.upgrade) res.setHeader('Connection', 'close');
+    next();
+  });
 
   // Proxy ClickUp API requests to avoid CORS in browser and proxy through backend
   app.all('/api/clickup/*', async (req, res) => {
@@ -572,6 +580,8 @@ async function startServer() {
     res.json({ ok: true, store: INITIAL_STORE, message: 'Server reset to initial state.' });
   });
 
+  const server = http.createServer(app);
+
   // Mount Vite or serve static files
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -580,13 +590,24 @@ async function startServer() {
     });
   } else {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: { server } },
       appType: 'spa'
     });
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '::', () => {
+  // Default keep-alive is 5s. The browser tunnel can write the next request
+  // onto a socket this process already closed, and Chrome shows an empty response.
+  server.keepAliveTimeout = 0;
+  server.headersTimeout = 65_000;
+  server.on('clientError', (err, socket) => {
+    console.error('HTTP client error:', err.message);
+    if (socket.writable) {
+      socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
+    }
+  });
+
+  server.listen(PORT, '::', () => {
     console.log(`E1 Server listening on port ${PORT}`);
   });
 }
