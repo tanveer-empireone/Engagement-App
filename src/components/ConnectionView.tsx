@@ -93,11 +93,11 @@ export const ConnectionView: React.FC = () => {
                 Live Data Connectors
               </h2>
               <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                Strictly Read-Only
+                Google Cloud Synced
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-0.5">
-              Live read streaming from your Google Sheet, Google Drive, and ClickUp Engagement Space.
+              Live bi-directional sync with Google Sheets &amp; Google Drive, plus read-only tasks from ClickUp.
             </p>
           </div>
 

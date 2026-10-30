@@ -362,3 +362,373 @@ export async function fetchAllLiveSheetData(
     fetchedAt: new Date().toISOString()
   };
 }
+
+/**
+ * Append row to a Google Sheet tab
+ */
+export async function appendSheetRow(
+  accessToken: string,
+  tabName: string,
+  rowValues: any[],
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<any> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    tabName
+  )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      values: [rowValues]
+    })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Google Sheets append failed (${res.status}): ${err}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Update a specific range in a Google Sheet tab
+ */
+export async function updateSheetRange(
+  accessToken: string,
+  range: string,
+  values: any[][],
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<any> {
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    range
+  )}?valueInputOption=USER_ENTERED`;
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ values })
+  });
+
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Google Sheets update failed (${res.status}): ${err}`);
+  }
+
+  return res.json();
+}
+
+/**
+ * Save or update a Person in the Google Sheet 'People' tab.
+ * This guarantees admin panel changes persist directly to Google Sheets!
+ */
+export async function savePersonToLiveSheet(
+  accessToken: string,
+  person: Person,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rows = await fetchTabValues(accessToken, 'People', 'A1:G200', spreadsheetId);
+  const targetEmail = (person.Email || '').trim().toLowerCase();
+
+  let existingRowIndex = -1;
+  if (rows && rows.length > 0) {
+    for (let i = 1; i < rows.length; i++) {
+      const emailCell = String(rows[i][0] || '').trim().toLowerCase();
+      if (emailCell === targetEmail) {
+        existingRowIndex = i + 1; // 1-based index in Google Sheets
+        break;
+      }
+    }
+  }
+
+  const rowData = [
+    person.Email.trim(),
+    person.Name.trim(),
+    person.Role,
+    person.Site,
+    person.Shift,
+    person.Active,
+    person.Avatar || ''
+  ];
+
+  if (existingRowIndex > 0) {
+    await updateSheetRange(
+      accessToken,
+      `People!A${existingRowIndex}:G${existingRowIndex}`,
+      [rowData],
+      spreadsheetId
+    );
+  } else {
+    // If table has no headers yet, append header first
+    if (!rows || rows.length === 0) {
+      await appendSheetRow(
+        accessToken,
+        'People',
+        ['Email', 'Name', 'Role', 'Site', 'Shift', 'Active', 'Avatar'],
+        spreadsheetId
+      );
+    }
+    await appendSheetRow(accessToken, 'People', rowData, spreadsheetId);
+  }
+}
+
+/**
+ * Deactivate a person in the Google Sheet 'People' tab
+ */
+export async function deactivatePersonInLiveSheet(
+  accessToken: string,
+  email: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rows = await fetchTabValues(accessToken, 'People', 'A1:G200', spreadsheetId);
+  const targetEmail = email.trim().toLowerCase();
+
+  for (let i = 1; i < rows.length; i++) {
+    const emailCell = String(rows[i][0] || '').trim().toLowerCase();
+    if (emailCell === targetEmail) {
+      const rowIndex = i + 1;
+      const updatedRow = [...rows[i]];
+      updatedRow[5] = false; // Active column (F)
+      await updateSheetRange(
+        accessToken,
+        `People!A${rowIndex}:G${rowIndex}`,
+        [updatedRow],
+        spreadsheetId
+      );
+      break;
+    }
+  }
+}
+
+/**
+ * Append or update an Upload item in the Google Sheet 'Uploads' tab
+ */
+export async function saveUploadToLiveSheet(
+  accessToken: string,
+  upload: UploadItem,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rowData = [
+    upload.id,
+    upload.fileName,
+    upload.officer,
+    upload.officerName,
+    upload.site,
+    upload.shift,
+    upload.mode,
+    upload.eventName || '',
+    upload.shiftDate,
+    upload.topic,
+    upload.spot,
+    upload.mediaType,
+    upload.mediaUrl, // Drive File ID or URL
+    upload.fileSizeBytes,
+    upload.capturedAt,
+    upload.uploadedAt,
+    upload.location || '',
+    upload.place || '',
+    upload.mapLink || '',
+    upload.note,
+    upload.peopleInShot || '',
+    upload.consentSigned ? 'YES' : 'NO',
+    upload.nothingConfidential ? 'YES' : 'NO',
+    upload.topPick ? 'TRUE' : 'FALSE',
+    upload.reviewStatus,
+    upload.reviewNote || '',
+    upload.reviewedBy || '',
+    upload.reviewedAt || '',
+    upload.usedInFinal ? 'TRUE' : 'FALSE',
+    upload.clickUpTask || '',
+    upload.folderPath || ''
+  ];
+
+  await appendSheetRow(accessToken, 'Uploads', rowData, spreadsheetId);
+}
+
+/**
+ * Update review status, notes, and top pick in the Google Sheet 'Uploads' tab
+ */
+export async function updateUploadReviewInLiveSheet(
+  accessToken: string,
+  uploadId: string,
+  patch: {
+    reviewStatus?: ReviewStatus;
+    reviewNote?: string;
+    topPick?: boolean;
+    reviewedBy?: string;
+    usedInFinal?: boolean;
+    creativeApprovedBy?: string;
+  },
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rows = await fetchTabValues(accessToken, 'Uploads', 'A1:AE500', spreadsheetId);
+  if (!rows || rows.length < 2) return;
+
+  const headers = rows[0].map((h) => String(h || '').trim().toLowerCase());
+  const idCol = headers.findIndex((h) => h.includes('id'));
+  const statusCol = headers.findIndex((h) => h.includes('status'));
+  const noteCol = headers.findIndex((h) => h.includes('review note'));
+  const byCol = headers.findIndex((h) => h.includes('reviewed by'));
+  const topCol = headers.findIndex((h) => h.includes('top pick') || h.includes('toppick'));
+  const finalCol = headers.findIndex((h) => h.includes('final'));
+
+  if (idCol === -1) return;
+
+  for (let i = 1; i < rows.length; i++) {
+    const rowId = String(rows[i][idCol] || '').trim();
+    if (rowId === uploadId.trim()) {
+      const rowIndex = i + 1;
+      const updatedRow = [...rows[i]];
+
+      if (patch.reviewStatus !== undefined && statusCol !== -1) updatedRow[statusCol] = patch.reviewStatus;
+      if (patch.reviewNote !== undefined && noteCol !== -1) updatedRow[noteCol] = patch.reviewNote;
+      if (patch.reviewedBy !== undefined && byCol !== -1) updatedRow[byCol] = patch.reviewedBy;
+      if (patch.topPick !== undefined && topCol !== -1) updatedRow[topCol] = patch.topPick ? 'TRUE' : 'FALSE';
+      if (patch.usedInFinal !== undefined && finalCol !== -1) updatedRow[finalCol] = patch.usedInFinal ? 'TRUE' : 'FALSE';
+
+      await updateSheetRange(
+        accessToken,
+        `Uploads!A${rowIndex}:${String.fromCharCode(65 + Math.min(updatedRow.length - 1, 25))}${rowIndex}`,
+        [updatedRow.slice(0, 26)],
+        spreadsheetId
+      );
+      break;
+    }
+  }
+}
+
+/**
+ * Append Shift Report to the Google Sheet 'Reports' tab
+ */
+export async function saveReportToLiveSheet(
+  accessToken: string,
+  report: ShiftReport,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rowData = [
+    report.reportId,
+    report.officer,
+    report.officerName,
+    report.site,
+    report.shift,
+    report.shiftDate,
+    report.engagementDone,
+    report.photosCount,
+    report.videosCount,
+    report.hoursWorked,
+    (report.spotChecks || []).join(', '),
+    report.notes || '',
+    report.verified ? 'TRUE' : 'FALSE',
+    report.signedOff ? 'TRUE' : 'FALSE',
+    report.isLate ? 'TRUE' : 'FALSE'
+  ];
+
+  await appendSheetRow(accessToken, 'Reports', rowData, spreadsheetId);
+}
+
+/**
+ * Sign off on a Shift Report in the Google Sheet 'Reports' tab
+ */
+export async function signOffReportInLiveSheet(
+  accessToken: string,
+  reportId: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rows = await fetchTabValues(accessToken, 'Reports', 'A1:O200', spreadsheetId);
+  if (!rows || rows.length < 2) return;
+
+  for (let i = 1; i < rows.length; i++) {
+    const idCell = String(rows[i][0] || '').trim();
+    if (idCell === reportId.trim()) {
+      const rowIndex = i + 1;
+      const updatedRow = [...rows[i]];
+      // Columns M & N (12 & 13) are Verified and Signed Off
+      while (updatedRow.length < 14) updatedRow.push('');
+      updatedRow[12] = 'TRUE';
+      updatedRow[13] = 'TRUE';
+
+      await updateSheetRange(
+        accessToken,
+        `Reports!A${rowIndex}:N${rowIndex}`,
+        [updatedRow.slice(0, 14)],
+        spreadsheetId
+      );
+      break;
+    }
+  }
+}
+
+/**
+ * Save direction / feedback message to the Google Sheet 'Feedback' tab
+ */
+export async function saveDirectionToLiveSheet(
+  accessToken: string,
+  direction: DirectionMessage,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rowData = [
+    direction.feedbackId,
+    direction.title,
+    direction.message,
+    direction.type,
+    direction.source,
+    direction.fromPerson,
+    direction.sentAt,
+    direction.toAll ? 'TRUE' : 'FALSE',
+    direction.toSite || '',
+    direction.toPerson || '',
+    direction.status,
+    direction.acknowledged ? 'TRUE' : 'FALSE',
+    (direction.acknowledgedBy || []).join(', '),
+    direction.acknowledgedAt || '',
+    direction.reply || ''
+  ];
+
+  await appendSheetRow(accessToken, 'Feedback', rowData, spreadsheetId);
+}
+
+/**
+ * Acknowledge direction in the Google Sheet 'Feedback' tab
+ */
+export async function acknowledgeDirectionInLiveSheet(
+  accessToken: string,
+  feedbackId: string,
+  email: string,
+  reply?: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<void> {
+  const rows = await fetchTabValues(accessToken, 'Feedback', 'A1:O200', spreadsheetId);
+  if (!rows || rows.length < 2) return;
+
+  for (let i = 1; i < rows.length; i++) {
+    const idCell = String(rows[i][0] || '').trim();
+    if (idCell === feedbackId.trim()) {
+      const rowIndex = i + 1;
+      const updatedRow = [...rows[i]];
+      while (updatedRow.length < 15) updatedRow.push('');
+
+      updatedRow[11] = 'TRUE'; // Acknowledged
+      const currentAck = String(updatedRow[12] || '');
+      const ackSet = new Set(currentAck.split(',').map((s) => s.trim()).filter(Boolean));
+      ackSet.add(email.trim());
+      updatedRow[12] = Array.from(ackSet).join(', '); // Acknowledged By
+      updatedRow[13] = new Date().toISOString(); // Acknowledged At
+      if (reply) updatedRow[14] = reply;
+
+      await updateSheetRange(
+        accessToken,
+        `Feedback!A${rowIndex}:O${rowIndex}`,
+        [updatedRow.slice(0, 15)],
+        spreadsheetId
+      );
+      break;
+    }
+  }
+}

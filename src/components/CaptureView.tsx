@@ -19,6 +19,7 @@ interface StagedFile {
   url: string;
   top: boolean;
   done: boolean;
+  rawFile?: File;
 }
 
 const QUICK_TOPICS = [
@@ -40,6 +41,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
   const [uploadSuccess, setUploadSuccess] = useState<boolean>(false);
+  const [warningMessage, setWarningMessage] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false);
   const [eventName, setEventName] = useState<string>('');
   const [isEventMode, setIsEventMode] = useState<boolean>(false);
@@ -51,11 +53,12 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
 
   const handleFiles = (files: FileList | null) => {
     if (!files) return;
+    setWarningMessage(null);
     const newItems: StagedFile[] = [];
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       if (f.size > 35 * 1024 * 1024) {
-        alert('File is larger than 35 MB.');
+        setWarningMessage(`"${f.name}" is larger than 35 MB and was skipped.`);
         continue;
       }
       newItems.push({
@@ -65,7 +68,8 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         type: f.type,
         url: URL.createObjectURL(f),
         top: false,
-        done: false
+        done: false,
+        rawFile: f
       });
     }
     setStagedFiles((prev) => [...prev, ...newItems]);
@@ -73,11 +77,12 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
   };
 
   const toggleStar = (id: string) => {
+    setWarningMessage(null);
     setStagedFiles((prev) =>
       prev.map((f) => {
         if (f.id === id) {
           if (!f.top && starredCount >= room.left) {
-            alert(`You reached your top-pick limit (${room.limit} max).`);
+            setWarningMessage(`You reached your top-pick limit (${room.limit} max).`);
             return f;
           }
           return { ...f, top: !f.top };
@@ -92,6 +97,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
     if (pending.length === 0) return;
 
     setIsUploading(true);
+    setWarningMessage(null);
     try {
       const todayYmd = new Date().toISOString().slice(0, 10);
       await addBatchUploads(
@@ -111,12 +117,16 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           consentSigned: true,
           nothingConfidential: true,
           topPick: f.top,
-          isCreativeWork: isCreativeSubmission
+          isCreativeWork: isCreativeSubmission,
+          rawFile: f.rawFile
         }))
       );
 
       setStagedFiles((prev) => prev.map((f) => ({ ...f, done: true })));
       setUploadSuccess(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setWarningMessage(`Upload failed: ${msg}`);
     } finally {
       setIsUploading(false);
     }
@@ -154,6 +164,19 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           <span className="text-slate-400 text-[11px] block">stars left</span>
         </div>
       </div>
+
+      {warningMessage && (
+        <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200/80 text-amber-800 text-xs flex items-center justify-between gap-2 shadow-xs">
+          <span>{warningMessage}</span>
+          <button
+            type="button"
+            onClick={() => setWarningMessage(null)}
+            className="text-amber-600 hover:text-amber-900 font-bold p-1"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {/* Creative Staff Mode Banner */}
       {currentUser.Role === 'Creative Designer' && (

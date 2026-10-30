@@ -17,8 +17,8 @@ export const auth = getAuth(app);
 // holds back the first auth callback and leaves the gate on a spinner.
 
 export const SCOPES = [
-  'https://www.googleapis.com/auth/spreadsheets.readonly',
-  'https://www.googleapis.com/auth/drive.readonly'
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/drive.file'
 ];
 
 const provider = new GoogleAuthProvider();
@@ -29,104 +29,59 @@ provider.setCustomParameters({
   prompt: 'select_account'
 });
 
-const TOKEN_STORAGE_KEY = 'e1_google_access_token_v1';
-const TOKEN_TTL_MS = 55 * 60 * 1000;
-
 let cachedAccessToken: string | null = null;
-
-interface StoredToken {
-  token: string;
-  expiresAt: number;
-  email: string;
-}
-
-function readStoredToken(email: string | null | undefined): string | null {
-  try {
-    const raw = sessionStorage.getItem(TOKEN_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<StoredToken>;
-    const expected = (email || '').trim().toLowerCase();
-    if (
-      !parsed.token ||
-      !parsed.expiresAt ||
-      !parsed.email ||
-      Date.now() >= parsed.expiresAt ||
-      !expected ||
-      parsed.email !== expected
-    ) {
-      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-      return null;
-    }
-    return parsed.token;
-  } catch {
-    return null;
-  }
-}
-
-function writeStoredToken(token: string | null, email?: string | null) {
-  try {
-    if (!token || !email) {
-      sessionStorage.removeItem(TOKEN_STORAGE_KEY);
-      return;
-    }
-    const payload: StoredToken = {
-      token,
-      email: email.trim().toLowerCase(),
-      expiresAt: Date.now() + TOKEN_TTL_MS
-    };
-    sessionStorage.setItem(TOKEN_STORAGE_KEY, JSON.stringify(payload));
-  } catch {
-    // sessionStorage can throw; the in-memory token still covers this page view.
-  }
-}
+let isSigningIn = false;
 
 /**
- * Subscribe to the Firebase session. The Google user survives reload.
- * The Sheets/Drive access token is restored only when it still belongs to that user.
+ * Subscribe to the Firebase session.
  */
 export const initAuth = (onChange: (user: User | null, token: string | null) => void) => {
   return onAuthStateChanged(
     auth,
     (user) => {
       if (user) {
-        cachedAccessToken = readStoredToken(user.email);
         onChange(user, cachedAccessToken);
         return;
       }
       cachedAccessToken = null;
-      writeStoredToken(null);
       onChange(null, null);
     },
     () => {
       cachedAccessToken = null;
-      writeStoredToken(null);
       onChange(null, null);
     }
   );
 };
 
 /**
- * Must be called from a button click.
- * Returns the Firebase user and a Google access token for read-only Sheets and Drive.
+ * Must be called from a button click or user interaction.
+ * Returns the Firebase user and a Google access token with Google Sheets & Drive permissions.
  */
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string }> => {
-  const result = await signInWithPopup(auth, provider);
-  const credential = GoogleAuthProvider.credentialFromResult(result);
-  if (!credential?.accessToken) {
-    throw new Error('Failed to get access token from Google sign in');
-  }
+  try {
+    isSigningIn = true;
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) {
+      throw new Error('Failed to get access token from Google sign in');
+    }
 
-  cachedAccessToken = credential.accessToken;
-  writeStoredToken(cachedAccessToken, result.user.email);
-  return { user: result.user, accessToken: cachedAccessToken };
+    cachedAccessToken = credential.accessToken;
+    return { user: result.user, accessToken: cachedAccessToken };
+  } finally {
+    isSigningIn = false;
+  }
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
   return cachedAccessToken;
 };
 
+export const setAccessToken = (token: string | null) => {
+  cachedAccessToken = token;
+};
+
 export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;
-  writeStoredToken(null);
 };

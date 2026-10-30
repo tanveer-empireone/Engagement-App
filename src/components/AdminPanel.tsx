@@ -51,7 +51,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 Engagement settings
               </h2>
               <p className="text-xs text-slate-500 mt-0.5">
-                Signed in as <span className="font-medium text-slate-700">{app.currentUser.Email}</span>. Changes are saved to the server.
+                Signed in as <span className="font-medium text-slate-700">{app.currentUser.Email}</span>. Changes sync directly to Google Sheets &amp; server.
               </p>
             </div>
             <button

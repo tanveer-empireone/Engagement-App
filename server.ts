@@ -586,7 +586,7 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  app.listen(PORT, '::', () => {
+  app.listen(PORT, '0.0.0.0', () => {
     console.log(`E1 Server listening on port ${PORT}`);
   });
 }
