@@ -1,3 +1,4 @@
+import { subscribeServerState, saveServerSettings } from '../utils/serverSync';
 import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import { User } from 'firebase/auth';
 import {
@@ -124,7 +125,7 @@ interface AppContextType {
   isDirector: boolean;
   canApproveCreative: boolean;
   showCaptureForAdmin: boolean;
-  setShowCaptureForAdmin: (value: boolean) => ActionResult;
+  setShowCaptureForAdmin: (value: boolean) => Promise<ActionResult>;
   canUseCapture: boolean;
   canSeeIntegrations: boolean;
 
@@ -135,12 +136,12 @@ interface AppContextType {
   fetchLiveClickUp: () => Promise<ConnectorReport>;
   fetchLiveAllData: () => Promise<void>;
   testClickUpToken: (token: string) => Promise<{ success: boolean; message: string }>;
-  updateAppConfig: (patch: Partial<AppIntegrationConfig>) => ActionResult;
+  updateAppConfig: (patch: Partial<AppIntegrationConfig>) => Promise<ActionResult>;
 
-  addDirectoryUser: (input: DirectoryUserInput) => ActionResult;
-  updateDirectoryUser: (email: string, patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => ActionResult;
-  removeDirectoryUser: (email: string) => ActionResult;
-  setActiveShift: (shift: string) => ActionResult;
+  addDirectoryUser: (input: DirectoryUserInput) => Promise<ActionResult>;
+  updateDirectoryUser: (email: string, patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => Promise<ActionResult>;
+  removeDirectoryUser: (email: string) => Promise<ActionResult>;
+  setActiveShift: (shift: string) => Promise<ActionResult>;
 
   updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => ActionResult;
   deleteUpload: (id: string) => ActionResult;
@@ -230,34 +231,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
   const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
 
-  // Load server state on initial load
-  useEffect(() => {
-    let mounted = true;
-    fetch('/api/state')
-      .then((res) => {
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (!mounted || !data) return;
-        if (Array.isArray(data.people)) setPeople(sanitizeDirectory(data.people));
-        if (data.config && typeof data.config === 'object') setAppConfig((prev) => ({ ...prev, ...data.config }));
-        if (Array.isArray(data.uploads)) setUploads(data.uploads);
-        if (Array.isArray(data.directions)) setDirections(data.directions);
-        if (Array.isArray(data.shiftReports)) setShiftReports(data.shiftReports);
-        if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
-        if (data.syncHealth && typeof data.syncHealth === 'object') setSyncHealth(data.syncHealth);
-        if (typeof data.clickUpToken === 'string' && data.clickUpToken) {
-          setClickUpTokenState(data.clickUpToken);
-        }
-      })
-      .catch((err) => {
-        console.warn('Could not fetch server state:', err);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  // The server owns access and settings; keep every mounted session up to date.
+  useEffect(() => subscribeServerState<{
+    people: Person[];
+    config: AppIntegrationConfig;
+    uploads: UploadItem[];
+    directions: DirectionMessage[];
+    shiftReports: ShiftReport[];
+    showCaptureForAdmin: boolean;
+    syncHealth: SyncHealth;
+    clickUpToken: string;
+  }>((data, initial) => {
+    if (Array.isArray(data.people)) setPeople(sanitizeDirectory(data.people));
+    if (data.config) setAppConfig((prev) =>
+      JSON.stringify(prev) === JSON.stringify(data.config) ? prev : data.config);
+    if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
+    if (typeof data.clickUpToken === 'string') setClickUpTokenState(data.clickUpToken);
+    // Refresh settings without replacing connector results or unsaved record edits.
+    if (initial) {
+      if (Array.isArray(data.uploads)) setUploads(data.uploads);
+      if (Array.isArray(data.directions)) setDirections(data.directions);
+      if (Array.isArray(data.shiftReports)) setShiftReports(data.shiftReports);
+      if (data.syncHealth) setSyncHealth(data.syncHealth);
+    }
+  }, (error) => console.warn('Could not refresh server settings:', error)), []);
 
   const googleEmail = googleUser?.email || '';
   const googleName = googleUser?.displayName || '';
@@ -298,21 +295,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     message: 'Only an admin can change these settings.'
   });
 
-  const setShowCaptureForAdmin = (value: boolean): ActionResult => {
+  const setShowCaptureForAdmin = async (value: boolean): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
-    setShowCaptureForAdminState(value);
-    fetch('/api/admin/capture-toggle', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ showCaptureForAdmin: value })
-    }).catch((err) => console.error('Failed to save capture toggle to server:', err));
-
-    return {
-      ok: true,
-      message: value
-        ? 'Capture media is visible on the admin view (saved to server).'
-        : 'Capture media is hidden on the admin view (saved to server).'
-    };
+    try {
+      const data = await saveServerSettings<{ showCaptureForAdmin: boolean; message: string }>(
+        '/api/admin/capture-toggle', 'POST', { showCaptureForAdmin: value });
+      setShowCaptureForAdminState(data.showCaptureForAdmin);
+      window.dispatchEvent(new Event('app-settings-saved'));
+      return { ok: true, message: data.message };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save capture setting.' };
+    }
   };
 
   useEffect(() => {
@@ -413,16 +406,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.uploads.length > 0) setUploads(result.uploads);
       if (result.directions.length > 0) setDirections(result.directions);
       if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
-      if (result.people.length > 0) {
-        setPeople((prev) => {
-          const incoming = sanitizeDirectory(result.people);
-          const incomingKeys = new Set(incoming.map((p) => normalizeEmail(p.Email)));
-          const keptInactive = prev.filter(
-            (p) => p.Active === false && !incomingKeys.has(normalizeEmail(p.Email))
-          );
-          return sanitizeDirectory([...incoming, ...keptInactive]);
-        });
-      }
+      // Directory access is managed by the server, never by connector reads.
       if (result.sites.length > 0) setSites(result.sites);
       if (result.topics.length > 0) setTopics(result.topics);
       if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
@@ -883,18 +867,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }).catch((err) => console.error('Failed to reset sample data on server:', err));
   };
 
-  const updateAppConfig = (patch: Partial<AppIntegrationConfig>): ActionResult => {
+  const updateAppConfig = async (patch: Partial<AppIntegrationConfig>): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
-    setAppConfig((prev) => ({ ...prev, ...patch }));
-    fetch('/api/admin/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch)
-    }).catch((err) => console.error('Failed to save config to server:', err));
-    return { ok: true, message: 'Configuration saved to server. Reads will use these ids. Nothing was written to Google or ClickUp.' };
+    try {
+      await saveServerSettings('/api/admin/config', 'POST', patch);
+      setAppConfig((prev) => ({ ...prev, ...patch }));
+      window.dispatchEvent(new Event('app-settings-saved'));
+      return { ok: true, message: 'Configuration saved to server.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save configuration.' };
+    }
   };
 
-  const addDirectoryUser = (input: DirectoryUserInput): ActionResult => {
+  const saveDirectory = async (url: string, method: string, body?: unknown): Promise<ActionResult> => {
+    try {
+      const data = await saveServerSettings<{ people: Person[]; message: string }>(url, method, body);
+      if (!Array.isArray(data.people)) throw new Error('Server did not confirm the updated roster.');
+      setPeople(sanitizeDirectory(data.people));
+      window.dispatchEvent(new Event('app-settings-saved'));
+      return { ok: true, message: data.message || 'Access saved. Active sessions update within five seconds.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save access changes.' };
+    }
+  };
+
+  const addDirectoryUser = async (input: DirectoryUserInput): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     if (input.role === 'Admin' && !isTechnicalAdmin) {
       return { ok: false, message: 'Directors cannot grant Technical Admin access. Only a Technical Admin can assign the Admin role.' };
@@ -906,38 +903,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (people.some((p) => normalizeEmail(p.Email) === normalizeEmail(email))) {
       return { ok: false, message: 'That email is already on the roster. Edit the existing row.' };
     }
-    const person = sanitizePerson({
-      Email: email,
-      Name: input.name.trim() || email.split('@')[0],
-      Role: input.role,
-      Site: input.site,
-      Shift: input.shift,
-      Active: true
-    });
-    setPeople((prev) => sanitizeDirectory([...prev, person]));
-    fetch('/api/admin/users', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input)
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.people && Array.isArray(data.people)) {
-          setPeople(sanitizeDirectory(data.people));
-        }
-      })
-      .catch((err) => console.error('Failed to save user to server:', err));
-
-    return {
-      ok: true,
-      message: `${person.Email} is saved as ${person.Role} on the server. The role applies when that Google account signs in.`
-    };
+    return saveDirectory('/api/admin/users', 'POST', input);
   };
 
-  const updateDirectoryUser = (
+  const updateDirectoryUser = async (
     email: string,
     patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>
-  ): ActionResult => {
+  ): Promise<ActionResult> => {
     const key = normalizeEmail(email);
     const isSelfShift =
       currentUser &&
@@ -952,60 +924,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!people.some((p) => normalizeEmail(p.Email) === key)) {
       return { ok: false, message: 'That person is not on the roster.' };
     }
-    setPeople((prev) =>
-      sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, ...patch } : p)))
-    );
-    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch)
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.people && Array.isArray(data.people)) {
-          setPeople(sanitizeDirectory(data.people));
-        }
-      })
-      .catch((err) => console.error('Failed to update user on server:', err));
-
-    return { ok: true, message: `Updated ${email} on the server.` };
+    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch);
   };
 
-  const setActiveShift = (shiftName: string): ActionResult => {
+  const setActiveShift = async (shiftName: string): Promise<ActionResult> => {
     if (!currentUser) return { ok: false, message: 'You must be signed in to select a shift.' };
     return updateDirectoryUser(currentUser.Email, { Shift: shiftName });
   };
 
-  const removeDirectoryUser = (email: string): ActionResult => {
+  const removeDirectoryUser = async (email: string): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     if (normalizeEmail(email) === normalizeEmail(currentUser?.Email)) {
       return { ok: false, message: 'You cannot remove the signed-in admin account.' };
     }
-    const key = normalizeEmail(email);
-    setPeople((prev) => {
-      if (!prev.some((p) => normalizeEmail(p.Email) === key)) {
-        return sanitizeDirectory([
-          ...prev,
-          { Email: email, Name: email.split('@')[0], Role: 'Officer', Site: sites[0]?.SiteName || 'Cebu City', Active: false }
-        ]);
-      }
-      return sanitizeDirectory(prev.map((p) => (normalizeEmail(p.Email) === key ? { ...p, Active: false } : p)));
-    });
-    fetch(`/api/admin/users/${encodeURIComponent(email)}`, {
-      method: 'DELETE'
-    })
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.people && Array.isArray(data.people)) {
-          setPeople(sanitizeDirectory(data.people));
-        }
-      })
-      .catch((err) => console.error('Failed to remove user on server:', err));
-
-    return {
-      ok: true,
-      message: `${email} access deactivated on server. Restoring access puts them back on the roster.`
-    };
+    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE');
   };
 
   const updateUpload = (

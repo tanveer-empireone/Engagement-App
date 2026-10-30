@@ -12,13 +12,14 @@ import { UserManualView } from './components/UserManualView';
 import { BlockedScreen, SessionLoadingScreen, SignInScreen } from './components/SignInScreen';
 
 const MainContent: React.FC = () => {
-  const { canUseCapture, canSeeIntegrations } = useSignedInApp();
+  const { canUseCapture, canSeeIntegrations, canReview } = useSignedInApp();
   const [activeTab, setActiveTab] = useState<string>('today');
 
   useEffect(() => {
+    if (!canReview && activeTab === 'review') setActiveTab('today');
     if (!canUseCapture && activeTab === 'capture') setActiveTab('today');
     if (!canSeeIntegrations && activeTab === 'connection') setActiveTab('today');
-  }, [activeTab, canUseCapture, canSeeIntegrations]);
+  }, [activeTab, canUseCapture, canSeeIntegrations, canReview]);
 
   return (
     <div className="min-h-screen flex flex-col md:flex-row font-sans selection:bg-indigo-500 selection:text-white bg-slate-50/50">
@@ -36,7 +37,7 @@ const MainContent: React.FC = () => {
             <CaptureView onNavigateToLibrary={() => setActiveTab('library')} />
           )}
           {activeTab === 'library' && <LibraryView />}
-          {activeTab === 'review' && <ReviewQueueView />}
+          {activeTab === 'review' && canReview && <ReviewQueueView />}
           {activeTab === 'reports' && <ShiftReportsView />}
           {activeTab === 'connection' && canSeeIntegrations && <ConnectionView />}
           {activeTab === 'manual' && <UserManualView />}

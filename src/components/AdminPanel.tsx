@@ -102,7 +102,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
             <button
               type="button"
               data-testid="toggle-admin-capture"
-              onClick={() => show(app.setShowCaptureForAdmin(!app.showCaptureForAdmin))}
+              onClick={async () => show(await app.setShowCaptureForAdmin(!app.showCaptureForAdmin))}
               className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer transition-colors shadow-xs"
             >
               {app.showCaptureForAdmin ? 'Hide Capture' : 'Show Capture'}
@@ -145,9 +145,9 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
     <div className="space-y-4">
       <form
         className="p-4 rounded-2xl bg-white/70 border border-slate-200/70 space-y-3"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          const result = addDirectoryUser({ email, name, role, site, shift });
+          const result = await addDirectoryUser({ email, name, role, site, shift });
           show(result);
           if (result.ok) {
             setEmail('');
@@ -240,8 +240,12 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
             person={person}
             sites={sites.map((item) => item.SiteName)}
             isTechnicalAdmin={isTechnicalAdmin}
-            onUpdate={(patch) => show(updateDirectoryUser(person.Email, patch))}
-            onRemove={() => show(removeDirectoryUser(person.Email))}
+            onUpdate={async (patch) => {
+              const result = await updateDirectoryUser(person.Email, patch);
+              show(result);
+              return result;
+            }}
+            onRemove={async () => show(await removeDirectoryUser(person.Email))}
           />
         ))}
       </div>
@@ -253,7 +257,7 @@ const PersonRow: React.FC<{
   person: Person;
   sites: string[];
   isTechnicalAdmin: boolean;
-  onUpdate: (patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => void;
+  onUpdate: (patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => Promise<{ ok: boolean; message: string }>;
   onRemove: () => void;
 }> = ({ person, sites, isTechnicalAdmin, onUpdate, onRemove }) => {
   const isRootAdmin = isAdminEmail(person.Email);
@@ -267,14 +271,22 @@ const PersonRow: React.FC<{
     ? ASSIGNABLE_ROLES
     : ASSIGNABLE_ROLES.filter((r) => r !== 'Admin');
 
-  const handleSave = () => {
-    onUpdate({
+  useEffect(() => {
+    if (isEditing) return;
+    setDraftName(person.Name);
+    setDraftRole(person.Role);
+    setDraftSite(person.Site);
+    setDraftShift(person.Shift || 'Peak');
+  }, [person.Name, person.Role, person.Site, person.Shift, isEditing]);
+
+  const handleSave = async () => {
+    const result = await onUpdate({
       Name: draftName.trim() || person.Name,
       Role: isRootAdmin ? 'Admin' : draftRole,
       Site: draftSite,
       Shift: draftShift
     });
-    setIsEditing(false);
+    if (result.ok) setIsEditing(false);
   };
 
   const handleCancel = () => {
@@ -810,9 +822,9 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
       </div>
       <form
         className="space-y-3"
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          show(updateAppConfig(draft));
+          show(await updateAppConfig(draft));
         }}
       >
         {field('sheetId', 'Google Sheet id')}
