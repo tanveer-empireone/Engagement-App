@@ -12,7 +12,8 @@ import {
   Topic,
   SyncLedgerEntry,
   SyncLogEntry,
-  ReviewStatus
+  ReviewStatus,
+  Role
 } from '../types';
 
 export const TARGET_SPREADSHEET_ID = '1Ts2VFZawgF2SmU4VSQf0ld6p7cEHkmE2GLzc-dKfk5E';
@@ -41,23 +42,45 @@ export interface LiveSheetDataResult {
 
 /**
  * Fetch spreadsheet metadata to discover actual tab names.
+ * Supports direct client fetch with transparent server-proxy fallback.
  */
 export async function fetchSpreadsheetMetadata(
   accessToken: string,
   spreadsheetId: string = TARGET_SPREADSHEET_ID
 ): Promise<{ title: string; tabs: SheetTabInfo[] }> {
   const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties`;
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json'
-    }
-  });
+  let res: Response | null = null;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
+  } catch (directErr) {
+    console.warn('Direct Sheets metadata fetch failed, attempting server proxy fallback...', directErr);
+  }
 
-  if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(`Google Sheets API error (${res.status}): ${errorText}`);
+  // Fallback to server proxy if direct fetch failed or received an error
+  if (!res || !res.ok) {
+    try {
+      const proxyRes = await fetch('/api/sheets/metadata', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: accessToken, spreadsheetId })
+      });
+      if (proxyRes.ok) {
+        res = proxyRes;
+      }
+    } catch (proxyErr) {
+      console.warn('Server proxy metadata fetch failed:', proxyErr);
+    }
+  }
+
+  if (!res || !res.ok) {
+    const errorText = res ? await res.text() : 'Network error or blocked request';
+    throw new Error(`Google Sheets API error (${res?.status ?? 'Network'}): ${errorText}`);
   }
 
   const data = await res.json();
@@ -74,6 +97,7 @@ export async function fetchSpreadsheetMetadata(
 
 /**
  * Fetch raw 2D array of values for a tab range (HTTP GET only)
+ * Supports direct client fetch with transparent server-proxy fallback.
  */
 export async function fetchTabValues(
   accessToken: string,
@@ -86,16 +110,37 @@ export async function fetchTabValues(
     fullRange
   )}?valueRenderOption=UNFORMATTED_VALUE`;
 
-  const res = await fetch(url, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      Accept: 'application/json'
-    }
-  });
+  let res: Response | null = null;
+  try {
+    res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        Accept: 'application/json'
+      }
+    });
+  } catch (directErr) {
+    console.warn(`Direct Sheets fetch for tab ${tabName} failed, trying server proxy...`, directErr);
+  }
 
-  if (!res.ok) {
-    console.warn(`Tab ${tabName} could not be fetched (${res.status})`);
+  // Fallback to server proxy if direct fetch failed
+  if (!res || !res.ok) {
+    try {
+      const proxyRes = await fetch('/api/sheets/values', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: accessToken, spreadsheetId, tabName, range })
+      });
+      if (proxyRes.ok) {
+        res = proxyRes;
+      }
+    } catch (proxyErr) {
+      console.warn(`Proxy Sheets fetch for tab ${tabName} failed:`, proxyErr);
+    }
+  }
+
+  if (!res || !res.ok) {
+    console.warn(`Tab ${tabName} could not be fetched (${res?.status ?? 'Network'})`);
     return [];
   }
 
@@ -104,11 +149,11 @@ export async function fetchTabValues(
 }
 
 /**
- * Parse rows into objects mapping headers to row values
+ * Parse rows into objects mapping headers to row values (case-insensitive header lookup)
  */
 function rowsToObjects(rows: any[][]): Record<string, any>[] {
   if (!rows || rows.length < 2) return [];
-  const headers = rows[0].map((h) => String(h || '').trim());
+  const rawHeaders = rows[0].map((h) => String(h || '').trim());
   const objects: Record<string, any>[] = [];
 
   for (let i = 1; i < rows.length; i++) {
@@ -117,15 +162,142 @@ function rowsToObjects(rows: any[][]): Record<string, any>[] {
       continue;
     }
     const obj: Record<string, any> = {};
-    headers.forEach((header, idx) => {
+    rawHeaders.forEach((header, idx) => {
       if (header) {
-        obj[header] = row[idx] !== undefined ? row[idx] : '';
+        const val = row[idx] !== undefined ? row[idx] : '';
+        obj[header] = val;
+        // Also map lowercase key for case-insensitive lookup
+        obj[header.toLowerCase()] = val;
       }
     });
     objects.push(obj);
   }
 
   return objects;
+}
+
+/**
+ * Helper to safely extract a field by trying multiple candidate header names
+ */
+function getCell(row: Record<string, any>, candidates: string[]): any {
+  for (const cand of candidates) {
+    if (cand in row && row[cand] !== undefined && row[cand] !== '') {
+      return row[cand];
+    }
+    const lower = cand.toLowerCase();
+    if (lower in row && row[lower] !== undefined && row[lower] !== '') {
+      return row[lower];
+    }
+  }
+  return '';
+}
+
+function normalizeRole(raw: any): Role {
+  const str = String(raw || '').trim().toLowerCase();
+  if (str.includes('admin')) return 'Admin';
+  if (str.includes('director') || str.includes('lead')) return 'Director';
+  if (str.includes('manager')) return 'Site Manager';
+  if (str.includes('creative') || str.includes('designer')) return 'Creative Designer';
+  return 'Officer';
+}
+
+function normalizeActive(raw: any): boolean {
+  if (raw === undefined || raw === null || raw === '') return true;
+  if (typeof raw === 'boolean') return raw;
+  const s = String(raw).trim().toLowerCase();
+  return s === 'true' || s === 'yes' || s === '1' || s === 'active';
+}
+
+/**
+ * Detect what kind of data is stored in a tab based on title or header row
+ */
+type TabCategory = 'people' | 'uploads' | 'feedback' | 'reports' | 'sites' | 'topics' | 'syncledger' | 'synclog' | 'unknown';
+
+function detectTabCategory(title: string, headers: string[]): TabCategory {
+  const t = title.toLowerCase().trim();
+  const lowerHeaders = headers.map((h) => h.toLowerCase().trim());
+
+  // 1. People / Roster
+  if (
+    t.includes('people') ||
+    t.includes('roster') ||
+    t.includes('member') ||
+    t.includes('user') ||
+    t.includes('team') ||
+    t.includes('staff') ||
+    t.includes('employee') ||
+    t.includes('directory') ||
+    (lowerHeaders.includes('email') && (lowerHeaders.includes('name') || lowerHeaders.includes('role')))
+  ) {
+    return 'people';
+  }
+
+  // 2. Uploads / Media
+  if (
+    t.includes('upload') ||
+    t.includes('media') ||
+    t.includes('photo') ||
+    t.includes('capture') ||
+    lowerHeaders.includes('upload id') ||
+    lowerHeaders.includes('file name') ||
+    lowerHeaders.includes('media type')
+  ) {
+    return 'uploads';
+  }
+
+  // 3. Feedback / Directions
+  if (
+    t.includes('feedback') ||
+    t.includes('direction') ||
+    t.includes('message') ||
+    t.includes('task') ||
+    lowerHeaders.includes('feedback id') ||
+    lowerHeaders.includes('direction')
+  ) {
+    return 'feedback';
+  }
+
+  // 4. Shift Reports
+  if (
+    t.includes('report') ||
+    t.includes('shift') ||
+    lowerHeaders.includes('report id') ||
+    lowerHeaders.includes('engagement done') ||
+    lowerHeaders.includes('hours worked')
+  ) {
+    return 'reports';
+  }
+
+  // 5. Sites
+  if (
+    t.includes('site') ||
+    t.includes('location') ||
+    lowerHeaders.includes('site name') ||
+    (lowerHeaders.includes('code') && lowerHeaders.includes('timezone'))
+  ) {
+    return 'sites';
+  }
+
+  // 6. Topics
+  if (
+    t.includes('topic') ||
+    t.includes('theme') ||
+    (lowerHeaders.includes('topic') && lowerHeaders.includes('code'))
+  ) {
+    return 'topics';
+  }
+
+  // 7. Sync Ledger
+  if (t.includes('ledger') || (lowerHeaders.includes('state') && lowerHeaders.includes('key'))) {
+    return 'syncledger';
+  }
+
+  // 8. Sync Log
+  if (t.includes('log') || (lowerHeaders.includes('stage') && lowerHeaders.includes('detail'))) {
+    return 'synclog';
+  }
+
+  return 'unknown';
 }
 
 /**
@@ -139,126 +311,146 @@ export async function fetchAllLiveSheetData(
   const meta = await fetchSpreadsheetMetadata(accessToken, spreadsheetId);
   const tabTitles = meta.tabs.map((t) => t.title);
 
-  const tabNamesToFetch = [
-    'Uploads',
-    'Feedback',
-    'Reports',
-    'People',
-    'Sites',
-    'Topics',
-    'SyncLedger',
-    'SyncLog'
-  ].filter((name) => tabTitles.some((t) => t.toLowerCase() === name.toLowerCase()));
+  // Fetch all discovered tabs up to 12
+  const tabsToFetch = tabTitles.slice(0, 12);
+  const fetchedTabs: Record<string, any[][]> = {};
 
-  const fetchedData: Record<string, any[][]> = {};
   await Promise.all(
-    tabNamesToFetch.map(async (name) => {
-      const actualName = tabTitles.find((t) => t.toLowerCase() === name.toLowerCase()) || name;
+    tabsToFetch.map(async (title) => {
       try {
-        const rows = await fetchTabValues(accessToken, actualName, 'A1:Z500', spreadsheetId);
-        fetchedData[name.toLowerCase()] = rows;
+        const rows = await fetchTabValues(accessToken, title, 'A1:Z500', spreadsheetId);
+        fetchedTabs[title] = rows;
       } catch (err) {
-        console.error(`Failed to fetch tab ${name}:`, err);
-        fetchedData[name.toLowerCase()] = [];
+        console.error(`Failed to fetch tab ${title}:`, err);
+        fetchedTabs[title] = [];
       }
     })
   );
 
   const rawRowsCount: Record<string, number> = {};
-  Object.keys(fetchedData).forEach((k) => {
-    rawRowsCount[k] = fetchedData[k].length;
-  });
+  const categorizedRows: Record<TabCategory, any[][]> = {
+    people: [],
+    uploads: [],
+    feedback: [],
+    reports: [],
+    sites: [],
+    topics: [],
+    syncledger: [],
+    synclog: [],
+    unknown: []
+  };
+
+  for (const title of tabsToFetch) {
+    const rows = fetchedTabs[title] || [];
+    rawRowsCount[title] = rows.length;
+    if (rows.length === 0) continue;
+
+    const headers = (rows[0] || []).map((h: any) => String(h || ''));
+    const category = detectTabCategory(title, headers);
+
+    if (category !== 'unknown') {
+      if (categorizedRows[category].length === 0) {
+        categorizedRows[category] = rows;
+      } else {
+        // If already populated, prefer the one with more rows
+        if (rows.length > categorizedRows[category].length) {
+          categorizedRows[category] = rows;
+        }
+      }
+    }
+  }
 
   // 1. Parse Uploads
-  const rawUploads = rowsToObjects(fetchedData['uploads'] || []);
+  const rawUploads = rowsToObjects(categorizedRows['uploads']);
   const parsedUploads: UploadItem[] = rawUploads.map((row, idx) => {
-    const id = String(row['Upload ID'] || row['ID'] || row['id'] || `UP-${idx}`);
-    const mediaType = String(row['Media Type'] || row['Type'] || 'Photo') === 'Video' ? 'Video' : 'Photo';
-    const topPickVal = row['Top Pick'] || row['TopPick'];
+    const id = String(getCell(row, ['Upload ID', 'ID', 'id']) || `UP-${idx}`);
+    const rawType = String(getCell(row, ['Media Type', 'Type']) || 'Photo');
+    const mediaType = rawType.toLowerCase() === 'video' ? 'Video' : 'Photo';
+    const topPickVal = getCell(row, ['Top Pick', 'TopPick']);
     const isTopPick = topPickVal === true || String(topPickVal).toLowerCase() === 'true' || String(topPickVal).toLowerCase() === 'yes';
-    const consentVal = row['Consent Signed'] || row['Consent'];
+    const consentVal = getCell(row, ['Consent Signed', 'Consent']);
     const consentSigned = consentVal === true || String(consentVal).toLowerCase() === 'true' || String(consentVal).toLowerCase() === 'yes';
-    const confVal = row['Nothing Confidential'] || row['Confidential OK'];
+    const confVal = getCell(row, ['Nothing Confidential', 'Confidential OK']);
     const nothingConfidential = confVal === true || String(confVal).toLowerCase() === 'true' || String(confVal).toLowerCase() === 'yes';
 
     let reviewStatus: ReviewStatus = 'Pending';
-    const rawStatus = String(row['Review Status'] || row['Status'] || '').toLowerCase();
+    const rawStatus = String(getCell(row, ['Review Status', 'Status'])).toLowerCase();
     if (rawStatus.includes('accept') || rawStatus.includes('approv')) reviewStatus = 'Accepted';
     else if (rawStatus.includes('top')) reviewStatus = 'Top pick';
     else if (rawStatus.includes('reshoot')) reviewStatus = 'Reshoot';
 
     return {
       id,
-      fileName: String(row['File Name'] || row['FileName'] || `${id}.${mediaType}.jpg`),
-      officer: String(row['Officer'] || row['Email'] || row['Uploaded By'] || 'officer@empireonecx.com'),
-      officerName: String(row['Officer Name'] || row['Name'] || row['Officer'] || 'Officer'),
-      site: String(row['Site'] || row['Site Name'] || 'Bacolod HQ'),
-      shift: String(row['Shift'] || 'Day Shift'),
-      mode: (String(row['Mode'] || 'Daily') === 'Event' ? 'Event' : 'Daily') as 'Daily' | 'Event',
-      eventName: String(row['Event Name'] || row['Event'] || ''),
-      shiftDate: String(row['Shift Date'] || row['Date'] || new Date().toISOString().slice(0, 10)),
-      topic: String(row['Topic'] || 'Site Activity'),
-      spot: String(row['Spot'] || 'Main Lobby'),
+      fileName: String(getCell(row, ['File Name', 'FileName']) || `${id}.${mediaType}.jpg`),
+      officer: String(getCell(row, ['Officer', 'Email', 'Uploaded By']) || 'officer@empireonecx.com'),
+      officerName: String(getCell(row, ['Officer Name', 'Name', 'Officer']) || 'Officer'),
+      site: String(getCell(row, ['Site', 'Site Name']) || 'Cebu City'),
+      shift: String(getCell(row, ['Shift']) || 'Peak'),
+      mode: (String(getCell(row, ['Mode']) || 'Daily') === 'Event' ? 'Event' : 'Daily') as 'Daily' | 'Event',
+      eventName: String(getCell(row, ['Event Name', 'Event']) || ''),
+      shiftDate: String(getCell(row, ['Shift Date', 'Date']) || new Date().toISOString().slice(0, 10)),
+      topic: String(getCell(row, ['Topic']) || 'Site Activity'),
+      spot: String(getCell(row, ['Spot']) || 'Main Lobby'),
       mediaType,
-      mediaUrl: String(row['Drive File ID'] || row['Thumbnail Link'] || row['URL'] || `https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=600&auto=format&fit=crop&q=80`),
-      fileSizeBytes: Number(row['File Size (Bytes)'] || row['Size'] || 2500000),
-      capturedAt: String(row['Captured At'] || row['CapturedAt'] || new Date().toISOString()),
-      uploadedAt: String(row['Uploaded At'] || row['UploadedAt'] || new Date().toISOString()),
-      location: String(row['Location'] || row['GPS'] || ''),
-      place: String(row['Place'] || row['Reverse Geocoded Place'] || ''),
-      mapLink: String(row['Map Link'] || row['Google Maps Link'] || ''),
-      note: String(row['Note'] || row['Caption'] || ''),
-      peopleInShot: String(row['People In Shot'] || ''),
+      mediaUrl: String(getCell(row, ['Drive File ID', 'Thumbnail Link', 'URL']) || `https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=600&auto=format&fit=crop&q=80`),
+      fileSizeBytes: Number(getCell(row, ['File Size (Bytes)', 'Size']) || 2500000),
+      capturedAt: String(getCell(row, ['Captured At', 'CapturedAt']) || new Date().toISOString()),
+      uploadedAt: String(getCell(row, ['Uploaded At', 'UploadedAt']) || new Date().toISOString()),
+      location: String(getCell(row, ['Location', 'GPS']) || ''),
+      place: String(getCell(row, ['Place', 'Reverse Geocoded Place']) || ''),
+      mapLink: String(getCell(row, ['Map Link', 'Google Maps Link']) || ''),
+      note: String(getCell(row, ['Note', 'Caption']) || ''),
+      peopleInShot: String(getCell(row, ['People In Shot']) || ''),
       consentSigned,
       nothingConfidential,
       topPick: isTopPick,
       reviewStatus,
-      reviewNote: row['Review Note'] ? String(row['Review Note']) : undefined,
-      reviewedBy: row['Reviewed By'] ? String(row['Reviewed By']) : undefined,
-      reviewedAt: row['Reviewed At'] ? String(row['Reviewed At']) : undefined,
-      usedInFinal: row['Used In Final'] === true || String(row['Used In Final']).toLowerCase() === 'true',
-      clickUpTask: row['ClickUp Task ID'] || row['ClickUp Task'] ? String(row['ClickUp Task ID'] || row['ClickUp Task']) : undefined,
-      folderPath: String(row['Folder Path'] || '')
+      reviewNote: getCell(row, ['Review Note']) ? String(getCell(row, ['Review Note'])) : undefined,
+      reviewedBy: getCell(row, ['Reviewed By']) ? String(getCell(row, ['Reviewed By'])) : undefined,
+      reviewedAt: getCell(row, ['Reviewed At']) ? String(getCell(row, ['Reviewed At'])) : undefined,
+      usedInFinal: String(getCell(row, ['Used In Final'])).toLowerCase() === 'true',
+      clickUpTask: getCell(row, ['ClickUp Task ID', 'ClickUp Task']) ? String(getCell(row, ['ClickUp Task ID', 'ClickUp Task'])) : undefined,
+      folderPath: String(getCell(row, ['Folder Path']) || '')
     };
   });
 
   // 2. Parse Feedback / Directions
-  const rawFeedback = rowsToObjects(fetchedData['feedback'] || []);
+  const rawFeedback = rowsToObjects(categorizedRows['feedback']);
   const parsedDirections: DirectionMessage[] = rawFeedback.map((row, idx) => {
-    const feedbackId = String(row['Feedback ID'] || row['ID'] || `FB-${idx}`);
-    const ackVal = row['Acknowledged'] || row['Ack'];
+    const feedbackId = String(getCell(row, ['Feedback ID', 'ID']) || `FB-${idx}`);
+    const ackVal = getCell(row, ['Acknowledged', 'Ack']);
     const isAck = ackVal === true || String(ackVal).toLowerCase() === 'true' || String(ackVal).toLowerCase() === 'yes';
-    const note = String(row['Note'] || row['Message'] || row['Direction'] || 'Operational direction');
-    const title = String(row['Title'] || row['Topic'] || 'Site Direction');
+    const note = String(getCell(row, ['Note', 'Message', 'Direction']) || 'Operational direction');
+    const title = String(getCell(row, ['Title', 'Topic']) || 'Site Direction');
 
     return {
       feedbackId,
       title,
       message: note,
-      type: (String(row['Type'] || '').includes('Theme') ? 'Theme to communicate' : "Today's tasks") as any,
-      source: String(row['Source'] || `ClickUp:${row['Task ID'] || row['Task'] || 'task'}`),
-      fromPerson: String(row['Author'] || row['Sent By'] || 'Admin'),
-      sentAt: String(row['Sent At'] || row['Created At'] || new Date().toISOString()),
-      toAll: row['To All'] !== false && String(row['To All']).toLowerCase() !== 'false',
-      toSite: row['Site'] ? String(row['Site']) : undefined,
-      toPerson: row['To Person'] ? String(row['To Person']) : undefined,
-      status: (String(row['Status'] || 'Published') === 'Draft' ? 'Draft' : 'Published') as 'Draft' | 'Published',
+      type: (String(getCell(row, ['Type'])).includes('Theme') ? 'Theme to communicate' : "Today's tasks") as any,
+      source: String(getCell(row, ['Source']) || `ClickUp:${getCell(row, ['Task ID', 'Task']) || 'task'}`),
+      fromPerson: String(getCell(row, ['Author', 'Sent By']) || 'Admin'),
+      sentAt: String(getCell(row, ['Sent At', 'Created At']) || new Date().toISOString()),
+      toAll: String(getCell(row, ['To All'])).toLowerCase() !== 'false',
+      toSite: getCell(row, ['Site']) ? String(getCell(row, ['Site'])) : undefined,
+      toPerson: getCell(row, ['To Person']) ? String(getCell(row, ['To Person'])) : undefined,
+      status: (String(getCell(row, ['Status']) || 'Published') === 'Draft' ? 'Draft' : 'Published') as 'Draft' | 'Published',
       acknowledged: isAck,
-      acknowledgedBy: row['Acknowledged By'] ? String(row['Acknowledged By']).split(',').map((s) => s.trim()) : [],
-      acknowledgedAt: row['Acknowledged At'] ? String(row['Acknowledged At']) : undefined,
-      reply: row['Reply'] ? String(row['Reply']) : undefined
+      acknowledgedBy: getCell(row, ['Acknowledged By']) ? String(getCell(row, ['Acknowledged By'])).split(',').map((s) => s.trim()) : [],
+      acknowledgedAt: getCell(row, ['Acknowledged At']) ? String(getCell(row, ['Acknowledged At'])) : undefined,
+      reply: getCell(row, ['Reply']) ? String(getCell(row, ['Reply'])) : undefined
     };
   });
 
   // 3. Parse Shift Reports
-  const rawReports = rowsToObjects(fetchedData['reports'] || []);
+  const rawReports = rowsToObjects(categorizedRows['reports']);
   const parsedReports: ShiftReport[] = rawReports.map((row, idx) => {
-    const reportId = String(row['Report ID'] || row['ID'] || `REP-${idx}`);
-    const officer = String(row['Officer'] || 'officer@empireonecx.com');
-    const officerName = String(row['Officer Name'] || row['Name'] || officer.split('@')[0]);
-    const site = String(row['Site'] || 'Bacolod HQ');
-    const shift = String(row['Shift'] || 'Day Shift');
-    const shiftDate = String(row['Shift Date'] || row['Date'] || new Date().toISOString().slice(0, 10));
+    const reportId = String(getCell(row, ['Report ID', 'ID']) || `REP-${idx}`);
+    const officer = String(getCell(row, ['Officer']) || 'officer@empireonecx.com');
+    const officerName = String(getCell(row, ['Officer Name', 'Name']) || officer.split('@')[0]);
+    const site = String(getCell(row, ['Site']) || 'Cebu City');
+    const shift = String(getCell(row, ['Shift']) || 'Peak');
+    const shiftDate = String(getCell(row, ['Shift Date', 'Date']) || new Date().toISOString().slice(0, 10));
 
     return {
       reportId,
@@ -267,83 +459,104 @@ export async function fetchAllLiveSheetData(
       site,
       shift,
       shiftDate,
-      engagementDone: String(row['Engagement Done'] || row['Notes'] || row['Summary'] || 'Standard shift duties completed'),
-      photosCount: Number(row['Photos Count'] || row['Uploads Count'] || row['Uploads'] || 0),
-      videosCount: Number(row['Videos Count'] || 0),
-      hoursWorked: Number(row['Hours Worked'] || row['Shift Hours'] || row['Hours'] || 8),
-      spotChecks: row['Spot Checks'] ? String(row['Spot Checks']).split(',').map((s) => s.trim()) : ['Lobby', 'Breakroom', 'Production Floor'],
-      notes: row['Notes'] ? String(row['Notes']) : undefined,
-      verified: row['Verified'] === true || String(row['Verified']).toLowerCase() === 'true',
-      signedOff: row['Signed Off'] === true || String(row['Signed Off']).toLowerCase() === 'true',
-      isLate: row['Late'] === true || String(row['Late']).toLowerCase() === 'true'
+      engagementDone: String(getCell(row, ['Engagement Done', 'Notes', 'Summary']) || 'Standard shift duties completed'),
+      photosCount: Number(getCell(row, ['Photos Count', 'Uploads Count', 'Uploads']) || 0),
+      videosCount: Number(getCell(row, ['Videos Count']) || 0),
+      hoursWorked: Number(getCell(row, ['Hours Worked', 'Shift Hours', 'Hours']) || 8),
+      spotChecks: getCell(row, ['Spot Checks']) ? String(getCell(row, ['Spot Checks'])).split(',').map((s) => s.trim()) : ['Lobby', 'Breakroom', 'Production Floor'],
+      notes: getCell(row, ['Notes']) ? String(getCell(row, ['Notes'])) : undefined,
+      verified: String(getCell(row, ['Verified'])).toLowerCase() === 'true',
+      signedOff: String(getCell(row, ['Signed Off'])).toLowerCase() === 'true',
+      isLate: String(getCell(row, ['Late'])).toLowerCase() === 'true'
     };
   });
 
-  // 4. Parse People
-  const rawPeople = rowsToObjects(fetchedData['people'] || []);
-  const parsedPeople: Person[] = rawPeople.map((row) => ({
-    Email: String(row['Email'] || row['email'] || ''),
-    Name: String(row['Name'] || row['name'] || row['Email'] || ''),
-    Role: (row['Role'] || row['role'] || 'Officer') as any,
-    Site: String(row['Site'] || row['Sites'] || 'Bacolod HQ'),
-    Shift: row['Shift'] ? String(row['Shift']) : 'Day Shift',
-    Active: row['Active'] !== false && String(row['Active']).toLowerCase() !== 'false',
-    Avatar: row['Avatar'] ? String(row['Avatar']) : undefined
-  })).filter((p) => p.Email);
+  // 4. Parse People / Roster (Matches Email, Name, Role, Site, Shift, Active)
+  const rawPeople = rowsToObjects(categorizedRows['people']);
+  const parsedPeople: Person[] = [];
+  for (const row of rawPeople) {
+    const email = String(getCell(row, ['Email', 'User Email', 'E-mail'])).trim();
+    if (!email || !email.includes('@')) continue;
+
+    const name = String(getCell(row, ['Name', 'Full Name', 'Officer Name']) || email.split('@')[0]).trim();
+    const rawRole = getCell(row, ['Role', 'User Role', 'Position']);
+    const isRootAdmin = email.toLowerCase() === 'tanveer@empireonecx.com';
+    const role = isRootAdmin ? 'Admin' : normalizeRole(rawRole);
+    const site = String(getCell(row, ['Site', 'Site Name', 'Location']) || 'Cebu City').trim();
+    const shift = String(getCell(row, ['Shift', 'Schedule']) || 'Peak').trim();
+    const active = isRootAdmin ? true : normalizeActive(getCell(row, ['Active', 'Is Active', 'Status']));
+    const avatar = getCell(row, ['Avatar', 'Photo']) ? String(getCell(row, ['Avatar', 'Photo'])).trim() : undefined;
+
+    parsedPeople.push({
+      Email: email,
+      Name: name,
+      Role: role,
+      Site: site,
+      Shift: shift,
+      Active: active,
+      Avatar: avatar
+    });
+  }
 
   // 5. Parse Sites
-  const rawSites = rowsToObjects(fetchedData['sites'] || []);
-  const parsedSites: Site[] = rawSites.map((row) => ({
-    Code: String(row['Code'] || 'SITE'),
-    SiteName: String(row['Site Name'] || row['Site'] || row['Name'] || ''),
-    FolderName: String(row['Folder Name'] || row['Folder'] || row['Site Name'] || ''),
-    Timezone: String(row['Timezone'] || 'Asia/Manila'),
-    Coordinates: {
-      lat: Number(row['Lat'] || row['Latitude'] || 10.6765),
-      lng: Number(row['Lng'] || row['Longitude'] || 122.9509)
-    },
-    BulkFolder: row['BulkFolder'] ? String(row['BulkFolder']) : undefined
-  })).filter((s) => s.SiteName);
+  const rawSites = rowsToObjects(categorizedRows['sites']);
+  const parsedSites: Site[] = rawSites
+    .map((row) => ({
+      Code: String(getCell(row, ['Code', 'Site Code']) || 'SITE'),
+      SiteName: String(getCell(row, ['Site Name', 'Site', 'Name']) || ''),
+      FolderName: String(getCell(row, ['Folder Name', 'Folder', 'Site Name']) || ''),
+      Timezone: String(getCell(row, ['Timezone']) || 'Asia/Manila'),
+      Coordinates: {
+        lat: Number(getCell(row, ['Lat', 'Latitude']) || 10.3157),
+        lng: Number(getCell(row, ['Lng', 'Longitude']) || 123.8854)
+      },
+      BulkFolder: getCell(row, ['BulkFolder', 'Bulk Folder']) ? String(getCell(row, ['BulkFolder', 'Bulk Folder'])) : undefined
+    }))
+    .filter((s) => s.SiteName);
 
   // 6. Parse Topics
-  const rawTopics = rowsToObjects(fetchedData['topics'] || []);
-  const parsedTopics: Topic[] = rawTopics.map((row) => ({
-    Topic: String(row['Topic'] || row['Name'] || ''),
-    Code: String(row['Code'] || 'TOPIC'),
-    Description: row['Description'] ? String(row['Description']) : undefined
-  })).filter((t) => t.Topic);
+  const rawTopics = rowsToObjects(categorizedRows['topics']);
+  const parsedTopics: Topic[] = rawTopics
+    .map((row) => ({
+      Topic: String(getCell(row, ['Topic', 'Name', 'Topic Name']) || ''),
+      Code: String(getCell(row, ['Code', 'Topic Code']) || 'TOPIC'),
+      Description: getCell(row, ['Description', 'Desc']) ? String(getCell(row, ['Description', 'Desc'])) : undefined
+    }))
+    .filter((t) => t.Topic);
 
   // 7. Parse SyncLedger & SyncLog
-  const rawLedger = rowsToObjects(fetchedData['syncledger'] || []);
+  const rawLedger = rowsToObjects(categorizedRows['syncledger']);
   const validStates: SyncLedgerEntry['state'][] = ['Pending', 'Posting', 'Created', 'Commented', 'Adopted', 'Uncertain'];
-  const parsedLedger: SyncLedgerEntry[] = rawLedger.map((row) => {
-    let state: SyncLedgerEntry['state'] = 'Created';
-    const rowState = String(row['State'] || row['state'] || '');
-    const found = validStates.find((s) => s.toLowerCase() === rowState.toLowerCase());
-    if (found) state = found;
+  const parsedLedger: SyncLedgerEntry[] = rawLedger
+    .map((row) => {
+      let state: SyncLedgerEntry['state'] = 'Created';
+      const rowState = String(getCell(row, ['State', 'Status']) || '');
+      const found = validStates.find((s) => s.toLowerCase() === rowState.toLowerCase());
+      if (found) state = found;
 
-    return {
-      key: String(row['Key'] || row['key'] || ''),
-      listId: String(row['List ID'] || row['listId'] || ''),
-      taskId: String(row['Task ID'] || row['taskId'] || ''),
-      state,
-      updatedAt: String(row['Updated At'] || row['updatedAt'] || new Date().toISOString())
-    };
-  }).filter((l) => l.key);
+      return {
+        key: String(getCell(row, ['Key', 'key']) || ''),
+        listId: String(getCell(row, ['List ID', 'listId']) || ''),
+        taskId: String(getCell(row, ['Task ID', 'taskId']) || ''),
+        state,
+        updatedAt: String(getCell(row, ['Updated At', 'updatedAt']) || new Date().toISOString())
+      };
+    })
+    .filter((l) => l.key);
 
-  const rawLogs = rowsToObjects(fetchedData['synclog'] || []);
+  const rawLogs = rowsToObjects(categorizedRows['synclog']);
   const parsedLogs: SyncLogEntry[] = rawLogs.map((row, idx) => {
     let state: SyncLogEntry['state'] = 'OK';
-    const s = String(row['State'] || '').toLowerCase();
+    const s = String(getCell(row, ['State', 'Status']) || '').toLowerCase();
     if (s.includes('err')) state = 'Error';
     else if (s.includes('info')) state = 'Info';
 
     return {
-      id: String(row['ID'] || `LOG-${idx}`),
-      time: String(row['Time'] || row['Timestamp'] || new Date().toISOString()),
-      stage: String(row['Stage'] || 'system'),
+      id: String(getCell(row, ['ID', 'id']) || `LOG-${idx}`),
+      time: String(getCell(row, ['Time', 'Timestamp']) || new Date().toISOString()),
+      stage: String(getCell(row, ['Stage']) || 'system'),
       state,
-      detail: String(row['Detail'] || row['Message'] || '')
+      detail: String(getCell(row, ['Detail', 'Message']) || '')
     };
   });
 
@@ -353,13 +566,12 @@ export async function fetchAllLiveSheetData(
     uploads: parsedUploads,
     directions: parsedDirections,
     shiftReports: parsedReports,
-    people: parsedPeople.length > 0 ? parsedPeople : [],
-    sites: parsedSites.length > 0 ? parsedSites : [],
-    topics: parsedTopics.length > 0 ? parsedTopics : [],
+    people: parsedPeople,
+    sites: parsedSites,
+    topics: parsedTopics,
     syncLedger: parsedLedger,
     syncLogs: parsedLogs,
     rawRowsCount,
     fetchedAt: new Date().toISOString()
   };
 }
-

@@ -29,7 +29,10 @@ provider.setCustomParameters({
   prompt: 'select_account'
 });
 
-let cachedAccessToken: string | null = null;
+const ACCESS_TOKEN_KEY = 'e1_google_access_token';
+
+let cachedAccessToken: string | null =
+  typeof window !== 'undefined' ? sessionStorage.getItem(ACCESS_TOKEN_KEY) : null;
 let isSigningIn = false;
 
 /**
@@ -40,14 +43,31 @@ export const initAuth = (onChange: (user: User | null, token: string | null) => 
     auth,
     (user) => {
       if (user) {
+        if (!cachedAccessToken && typeof window !== 'undefined') {
+          cachedAccessToken = sessionStorage.getItem(ACCESS_TOKEN_KEY);
+        }
         onChange(user, cachedAccessToken);
         return;
       }
       cachedAccessToken = null;
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+        } catch {
+          // ignore
+        }
+      }
       onChange(null, null);
     },
     () => {
       cachedAccessToken = null;
+      if (typeof window !== 'undefined') {
+        try {
+          sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+        } catch {
+          // ignore
+        }
+      }
       onChange(null, null);
     }
   );
@@ -67,6 +87,13 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     }
 
     cachedAccessToken = credential.accessToken;
+    if (typeof window !== 'undefined') {
+      try {
+        sessionStorage.setItem(ACCESS_TOKEN_KEY, credential.accessToken);
+      } catch {
+        // ignore
+      }
+    }
     return { user: result.user, accessToken: cachedAccessToken };
   } finally {
     isSigningIn = false;
@@ -74,14 +101,32 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
+  if (!cachedAccessToken && typeof window !== 'undefined') {
+    cachedAccessToken = sessionStorage.getItem(ACCESS_TOKEN_KEY);
+  }
   return cachedAccessToken;
 };
 
 export const setAccessToken = (token: string | null) => {
   cachedAccessToken = token;
+  if (typeof window !== 'undefined') {
+    try {
+      if (token) sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+      else sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+    } catch {
+      // ignore
+    }
+  }
 };
 
 export const logout = async () => {
   await signOut(auth);
   cachedAccessToken = null;
+  if (typeof window !== 'undefined') {
+    try {
+      sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+    } catch {
+      // ignore
+    }
+  }
 };

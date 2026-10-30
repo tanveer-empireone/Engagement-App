@@ -46,9 +46,89 @@ const INITIAL_STORE: ServerStore = {
   people: [
     {
       Email: ADMIN_EMAIL,
-      Name: 'Tanveer',
+      Name: 'Tanveer Hussain',
       Role: 'Admin',
       Site: 'Cebu City',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'shawn@empireonecx.com',
+      Name: 'Shawn Habib',
+      Role: 'Officer',
+      Site: 'Toronto',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'mika@empireonecx.com',
+      Name: 'Mika Leopoldo',
+      Role: 'Admin',
+      Site: 'Cebu City',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'maricarm@empireonegroup.com',
+      Name: 'Maricar Montalban',
+      Role: 'Officer',
+      Site: 'Carcar',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'hashie@empireonegroup.com',
+      Name: 'Hashie Mae Bendecio',
+      Role: 'Officer',
+      Site: 'Carcar',
+      Shift: 'Early',
+      Active: true
+    },
+    {
+      Email: 'scengagement@empireonegroup.com',
+      Name: 'Ma. Teresa Detalla',
+      Role: 'Officer',
+      Site: 'San Carlos',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'rheanne@empireonegroup.com',
+      Name: 'Cris Rheanne Villaver',
+      Role: 'Officer',
+      Site: 'Cebu City',
+      Shift: 'Peak',
+      Active: false
+    },
+    {
+      Email: 'marc@empireonecx.com',
+      Name: 'Marc Louise Castanares',
+      Role: 'Site Manager',
+      Site: 'Carcar',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'mark@empireonecx.com',
+      Name: 'Mark Valencia',
+      Role: 'Site Manager',
+      Site: 'San Carlos',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'dana@empireonecx.com',
+      Name: 'Dana Surio',
+      Role: 'Site Manager',
+      Site: 'Urdaneta',
+      Shift: 'Peak',
+      Active: true
+    },
+    {
+      Email: 'engagement@empireonecx.com',
+      Name: 'E1 App Account',
+      Role: 'Admin',
+      Site: 'Toronto',
       Shift: 'Peak',
       Active: true
     }
@@ -210,6 +290,125 @@ async function startServer() {
     }
 
     res.json({ ok: true, people: store.people });
+  });
+
+  // REST API: Merge and sync roster parsed from Google Sheet
+  app.post('/api/session/sync-sheet-roster', (req, res) => {
+    const incoming = req.body?.people;
+    if (!Array.isArray(incoming) || incoming.length === 0) {
+      res.status(400).json({ ok: false, message: 'Valid people array required' });
+      return;
+    }
+
+    const store = readStore();
+    let changed = false;
+
+    for (const p of incoming) {
+      if (!p?.Email || !String(p.Email).includes('@')) continue;
+      const key = normalizeEmail(p.Email);
+      const idx = store.people.findIndex((existing) => normalizeEmail(existing.Email) === key);
+
+      if (idx === -1) {
+        store.people.push({
+          Email: String(p.Email).trim(),
+          Name: (p.Name && String(p.Name).trim()) || String(p.Email).split('@')[0],
+          Role: key === ADMIN_EMAIL ? 'Admin' : (p.Role || 'Officer'),
+          Site: p.Site || 'Cebu City',
+          Shift: p.Shift || 'Peak',
+          Active: key === ADMIN_EMAIL ? true : (p.Active !== false),
+          Avatar: p.Avatar
+        });
+        changed = true;
+      } else {
+        const existing = store.people[idx];
+        if (p.Name && p.Name !== existing.Name && existing.Name === existing.Email.split('@')[0]) {
+          existing.Name = String(p.Name).trim();
+          changed = true;
+        }
+        if (p.Site && p.Site !== existing.Site) {
+          existing.Site = p.Site;
+          changed = true;
+        }
+        if (p.Shift && p.Shift !== existing.Shift) {
+          existing.Shift = p.Shift;
+          changed = true;
+        }
+        if (key !== ADMIN_EMAIL && p.Active !== undefined && p.Active !== existing.Active) {
+          existing.Active = Boolean(p.Active);
+          changed = true;
+        }
+      }
+    }
+
+    // Always maintain tanveer as Admin
+    const adminIdx = store.people.findIndex((p) => normalizeEmail(p.Email) === ADMIN_EMAIL);
+    if (adminIdx !== -1) {
+      store.people[adminIdx].Role = 'Admin';
+      store.people[adminIdx].Active = true;
+    }
+
+    if (changed) {
+      writeStore(store);
+    }
+
+    res.json({ ok: true, people: store.people, count: store.people.length });
+  });
+
+  // REST API: Proxy Google Sheets metadata read (Read-only GET)
+  app.post('/api/sheets/metadata', async (req, res) => {
+    const { token, spreadsheetId } = req.body || {};
+    if (!token || !spreadsheetId) {
+      res.status(400).json({ error: 'Token and spreadsheetId required' });
+      return;
+    }
+
+    try {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}?fields=properties.title,sheets.properties`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json'
+        }
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Proxy Google Sheets values read (Read-only GET)
+  app.post('/api/sheets/values', async (req, res) => {
+    const { token, spreadsheetId, tabName, range } = req.body || {};
+    if (!token || !spreadsheetId || !tabName) {
+      res.status(400).json({ error: 'Token, spreadsheetId, and tabName required' });
+      return;
+    }
+
+    try {
+      const fullRange = `${tabName}!${range || 'A1:Z500'}`;
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        fullRange
+      )}?valueRenderOption=UNFORMATTED_VALUE`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json'
+        }
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
   });
 
   // REST API: Update app configuration

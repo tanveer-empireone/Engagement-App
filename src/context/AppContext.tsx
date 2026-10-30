@@ -417,13 +417,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.uploads.length > 0) setUploads(result.uploads);
       if (result.directions.length > 0) setDirections(result.directions);
       if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
-      // Directory access is managed by the server, never by connector reads.
       if (result.sites.length > 0) setSites(result.sites);
       if (result.topics.length > 0) setTopics(result.topics);
       if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
       if (result.syncLogs.length > 0) setSyncLogs(result.syncLogs);
 
-      const detail = `Read “${result.spreadsheetTitle}” (${result.availableTabs.length} tabs). Nothing was written back to the sheet.`;
+      if (result.people.length > 0) {
+        setPeople((prev) => {
+          const merged = [...result.people];
+          for (const p of prev) {
+            if (!merged.some((m) => normalizeEmail(m.Email) === normalizeEmail(p.Email))) {
+              merged.push(p);
+            }
+          }
+          return sanitizeDirectory(merged);
+        });
+
+        // Save imported sheet roster to server
+        fetch('/api/session/sync-sheet-roster', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ people: result.people })
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            if (data?.people && Array.isArray(data.people)) {
+              setPeople(sanitizeDirectory(data.people));
+            }
+          })
+          .catch((err) => console.warn('Failed to persist sheet roster to server:', err));
+      }
+
+      const detail = `Read “${result.spreadsheetTitle}” (${result.availableTabs.length} tabs, ${result.people.length} roster rows, ${result.uploads.length} uploads). Nothing was written back to the sheet.`;
       return { name: 'Google Sheets', state: 'OK', detail };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

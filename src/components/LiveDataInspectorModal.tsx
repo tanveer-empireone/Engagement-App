@@ -295,6 +295,8 @@ export const LiveDataInspectorModal: React.FC<LiveDataInspectorModalProps> = ({ 
                           <th className="py-2.5 px-3">Email</th>
                           <th className="py-2.5 px-3">Name</th>
                           <th className="py-2.5 px-3">Role</th>
+                          <th className="py-2.5 px-3">Site</th>
+                          <th className="py-2.5 px-3">Shift</th>
                           <th className="py-2.5 px-3">Active</th>
                         </tr>
                       </thead>
@@ -304,8 +306,14 @@ export const LiveDataInspectorModal: React.FC<LiveDataInspectorModalProps> = ({ 
                             <td className="py-2 px-3 font-mono text-indigo-700">{p.Email}</td>
                             <td className="py-2 px-3 font-bold text-slate-800">{p.Name}</td>
                             <td className="py-2 px-3 text-slate-600">{p.Role}</td>
+                            <td className="py-2 px-3 text-slate-600">{p.Site}</td>
+                            <td className="py-2 px-3 text-slate-600">{p.Shift || 'Peak'}</td>
                             <td className="py-2 px-3">
-                              <span className="text-emerald-600 font-bold">✓ Active</span>
+                              {p.Active ? (
+                                <span className="text-emerald-600 font-bold">✓ Active</span>
+                              ) : (
+                                <span className="text-slate-400 font-medium">Inactive</span>
+                              )}
                             </td>
                           </tr>
                         ))}
