@@ -137,6 +137,7 @@ async function startServer() {
   const app = express();
 
   app.use(express.json({ limit: '50mb' }));
+  app.use(express.static(path.resolve(__dirname, 'public')));
 
   // Proxy ClickUp API requests to avoid CORS in browser and proxy through backend
   app.all('/api/clickup/*', async (req, res) => {

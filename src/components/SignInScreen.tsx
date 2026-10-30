@@ -7,8 +7,12 @@ export const SessionLoadingScreen: React.FC = () => {
   return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="glass-card rounded-3xl p-8 max-w-md w-full border border-white/80 text-center">
-        <div className="w-12 h-12 mx-auto rounded-2xl bg-indigo-600 text-white font-bold flex items-center justify-center shadow-md shadow-indigo-500/25">
-          E1
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-white border border-indigo-100 shadow-md shadow-indigo-500/20 flex items-center justify-center p-2">
+          <img
+            src="/assets/aistudio/Favicon_01_144d928c.png"
+            alt="EmpireOne CX"
+            className="w-full h-full object-contain"
+          />
         </div>
         <h1 className="mt-4 text-lg font-bold text-slate-900">Checking your Google session</h1>
         <p className="mt-1 text-xs text-slate-500">
@@ -27,8 +31,12 @@ export const SignInScreen: React.FC = () => {
     <div data-testid="google-sign-in-gate" className="min-h-screen flex items-center justify-center px-4 py-10">
       <div className="glass-card rounded-3xl p-6 sm:p-8 max-w-md w-full border border-white/80 shadow-xs">
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-indigo-600 text-white font-bold flex items-center justify-center shadow-md shadow-indigo-500/25">
-            E1
+          <div className="w-12 h-12 rounded-2xl bg-white border border-indigo-100 shadow-md shadow-indigo-500/20 flex items-center justify-center p-1.5 shrink-0">
+            <img
+              src="/assets/aistudio/Favicon_01_144d928c.png"
+              alt="EmpireOne CX"
+              className="w-full h-full object-contain"
+            />
           </div>
           <div>
             <div className="text-[10px] font-bold uppercase tracking-widest text-slate-400">EmpireOne CX</div>
@@ -87,8 +95,12 @@ export const BlockedScreen: React.FC = () => {
   return (
     <div data-testid="access-blocked" className="min-h-screen flex items-center justify-center px-4">
       <div className="glass-card rounded-3xl p-8 max-w-md w-full border border-white/80 text-center">
-        <div className="w-12 h-12 mx-auto rounded-2xl bg-slate-900 text-white font-bold flex items-center justify-center">
-          E1
+        <div className="w-14 h-14 mx-auto rounded-2xl bg-white border border-slate-200 shadow-md shadow-slate-500/10 flex items-center justify-center p-2">
+          <img
+            src="/assets/aistudio/Favicon_01_144d928c.png"
+            alt="EmpireOne CX"
+            className="w-full h-full object-contain"
+          />
         </div>
         <h1 className="mt-4 text-lg font-bold text-slate-900">Access removed</h1>
         <p className="mt-2 text-xs text-slate-500 leading-relaxed">

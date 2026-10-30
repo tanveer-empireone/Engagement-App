@@ -93,10 +93,14 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                 <div className="flex items-center gap-2.5 min-w-0">
                   <button
                     onClick={() => setActiveTab('today')}
-                    className="w-9 h-9 rounded-2xl bg-indigo-600 text-white font-bold text-sm flex items-center justify-center shadow-md shadow-indigo-500/25 cursor-pointer hover:bg-indigo-700 transition shrink-0"
+                    className="w-9 h-9 rounded-2xl bg-white border border-indigo-100 shadow-md shadow-indigo-500/15 flex items-center justify-center p-1 cursor-pointer hover:scale-105 transition shrink-0"
                     title="EmpireOne CX"
                   >
-                    E1
+                    <img
+                      src="/assets/aistudio/Favicon_01_144d928c.png"
+                      alt="EmpireOne CX"
+                      className="w-full h-full object-contain"
+                    />
                   </button>
                   <div className="flex flex-col min-w-0">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
@@ -128,10 +132,14 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             <div className="flex flex-col items-center gap-2 pb-2">
               <button
                 onClick={() => setActiveTab('today')}
-                className="w-10 h-10 rounded-2xl bg-indigo-600 text-white font-bold text-sm flex items-center justify-center shadow-md shadow-indigo-500/25 cursor-pointer hover:bg-indigo-700 transition"
+                className="w-10 h-10 rounded-2xl bg-white border border-indigo-100 shadow-md shadow-indigo-500/15 flex items-center justify-center p-1 cursor-pointer hover:scale-105 transition"
                 title="EmpireOne CX"
               >
-                E1
+                <img
+                  src="/assets/aistudio/Favicon_01_144d928c.png"
+                  alt="EmpireOne CX"
+                  className="w-full h-full object-contain"
+                />
               </button>
               <button
                 onClick={toggleSidebar}
@@ -389,9 +397,14 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setActiveTab('today')}
-              className="w-7 h-7 rounded-xl bg-indigo-600 text-white font-bold text-xs flex items-center justify-center shadow-xs cursor-pointer"
+              className="w-7 h-7 rounded-xl bg-white border border-indigo-100 flex items-center justify-center shadow-xs cursor-pointer p-0.5 hover:scale-105 transition shrink-0"
+              title="EmpireOne CX"
             >
-              E1
+              <img
+                src="/assets/aistudio/Favicon_01_144d928c.png"
+                alt="EmpireOne CX"
+                className="w-full h-full object-contain"
+              />
             </button>
             <div className="flex flex-col">
               <span className="font-bold text-slate-900 text-xs sm:text-sm tracking-tight leading-none">
