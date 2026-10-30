@@ -19,7 +19,6 @@ interface StagedFile {
   url: string;
   top: boolean;
   done: boolean;
-  rawFile?: File;
 }
 
 const QUICK_TOPICS = [
@@ -68,8 +67,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         type: f.type,
         url: URL.createObjectURL(f),
         top: false,
-        done: false,
-        rawFile: f
+        done: false
       });
     }
     setStagedFiles((prev) => [...prev, ...newItems]);
@@ -117,8 +115,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           consentSigned: true,
           nothingConfidential: true,
           topPick: f.top,
-          isCreativeWork: isCreativeSubmission,
-          rawFile: f.rawFile
+          isCreativeWork: isCreativeSubmission
         }))
       );
 

@@ -1,5 +1,5 @@
 import { subscribeServerState, saveServerSettings } from '../utils/serverSync';
-import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react';
 import { User } from 'firebase/auth';
 import {
   Person,
@@ -57,21 +57,11 @@ import {
 } from '../services/googleAuth';
 import {
   fetchAllLiveSheetData,
-  TARGET_SPREADSHEET_ID,
-  savePersonToLiveSheet,
-  deactivatePersonInLiveSheet,
-  saveUploadToLiveSheet,
-  updateUploadReviewInLiveSheet,
-  saveReportToLiveSheet,
-  signOffReportInLiveSheet,
-  saveDirectionToLiveSheet,
-  acknowledgeDirectionInLiveSheet
+  TARGET_SPREADSHEET_ID
 } from '../services/googleSheetsService';
 import {
   fetchAllLiveDriveData,
-  TARGET_DRIVE_ROOT_FOLDER_ID,
-  ensureFolderPath,
-  uploadFileToDrive
+  TARGET_DRIVE_ROOT_FOLDER_ID
 } from '../services/googleDriveService';
 import {
   fetchAllLiveClickUpData,
@@ -231,6 +221,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [isFetchingLiveSheets, setIsFetchingLiveSheets] = useState(false);
   const [isFetchingLiveDrive, setIsFetchingLiveDrive] = useState(false);
   const [liveSheetsMeta, setLiveSheetsMeta] = useState<Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null>(null);
+  const liveSheetsMetaRef = useRef<Awaited<ReturnType<typeof fetchAllLiveSheetData>> | null>(null);
+  liveSheetsMetaRef.current = liveSheetsMeta;
   const [liveDriveData, setLiveDriveData] = useState<Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null>(null);
 
   const [clickUpToken, setClickUpTokenState] = useState<string>(getStoredClickUpToken);
@@ -241,7 +233,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
   const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
 
-  // The server owns access and settings; keep every mounted session up to date.
+  // The server owns access and settings; keep every mounted session up to date in real time.
   useEffect(() => subscribeServerState<{
     people: Person[];
     config: AppIntegrationConfig;
@@ -251,18 +243,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showCaptureForAdmin: boolean;
     syncHealth: SyncHealth;
     clickUpToken: string;
-  }>((data, initial) => {
+  }>((data) => {
     if (Array.isArray(data.people)) setPeople(sanitizeDirectory(data.people));
     if (data.config) setAppConfig((prev) =>
       JSON.stringify(prev) === JSON.stringify(data.config) ? prev : data.config);
     if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
     if (typeof data.clickUpToken === 'string') setClickUpTokenState(data.clickUpToken);
-    // Refresh settings without replacing connector results or unsaved record edits.
-    if (initial) {
-      if (Array.isArray(data.uploads)) setUploads(data.uploads);
-      if (Array.isArray(data.directions)) setDirections(data.directions);
-      if (Array.isArray(data.shiftReports)) setShiftReports(data.shiftReports);
-      if (data.syncHealth) setSyncHealth(data.syncHealth);
+
+    // Keep records, directions, reports, and sync health in sync with server state across all user sessions
+    if (!liveSheetsMetaRef.current) {
+      if (Array.isArray(data.uploads)) {
+        setUploads((prev) => (JSON.stringify(prev) === JSON.stringify(data.uploads) ? prev : data.uploads));
+      }
+      if (Array.isArray(data.directions)) {
+        setDirections((prev) => (JSON.stringify(prev) === JSON.stringify(data.directions) ? prev : data.directions));
+      }
+      if (Array.isArray(data.shiftReports)) {
+        setShiftReports((prev) => (JSON.stringify(prev) === JSON.stringify(data.shiftReports) ? prev : data.shiftReports));
+      }
+      if (data.syncHealth) {
+        setSyncHealth((prev) => (JSON.stringify(prev) === JSON.stringify(data.syncHealth) ? prev : data.syncHealth));
+      }
     }
   }, (error) => console.warn('Could not refresh server settings:', error)), []);
 
@@ -416,7 +417,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (result.uploads.length > 0) setUploads(result.uploads);
       if (result.directions.length > 0) setDirections(result.directions);
       if (result.shiftReports.length > 0) setShiftReports(result.shiftReports);
-      if (result.people.length > 0) setPeople(sanitizeDirectory(result.people));
+      // Directory access is managed by the server, never by connector reads.
       if (result.sites.length > 0) setSites(result.sites);
       if (result.topics.length > 0) setTopics(result.topics);
       if (result.syncLedger.length > 0) setSyncLedger(result.syncLedger);
@@ -595,12 +596,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     topPick: boolean;
     isCreativeWork?: boolean;
     ext?: string;
-    rawFile?: File;
   }>): Promise<UploadItem[]> => {
     if (!currentUser) return [];
     const existingIds = uploads.map((u) => u.id);
     const created: UploadItem[] = [];
-    const token = googleToken || (await getAccessToken());
 
     for (const f of filesData) {
       const siteMeta = sites.find((s) => s.SiteName === f.site) || sites[0];
@@ -623,26 +622,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
 
-      let finalMediaUrl = f.mediaUrl;
-
-      // Direct upload to Google Drive if OAuth token is available and file exists
-      if (token && f.rawFile) {
-        try {
-          const folderId = await ensureFolderPath(token, appConfig.driveRootId.trim() || TARGET_DRIVE_ROOT_FOLDER_ID, [
-            f.site,
-            f.mode,
-            f.shiftDate
-          ]);
-          const driveResult = await uploadFileToDrive(token, folderId, f.rawFile, fileName);
-          if (driveResult.id) {
-            finalMediaUrl = driveResult.thumbnailLink || driveResult.webViewLink || driveResult.id;
-          }
-        } catch (driveErr) {
-          console.warn(`Drive direct upload fallback for ${fileName}:`, driveErr);
-        }
-      }
-
-      const uploadItem: UploadItem = {
+      created.push({
         id,
         fileName,
         officer: currentUser.Email,
@@ -655,8 +635,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         topic: f.topic,
         spot: f.spot,
         mediaType: f.mediaType,
-        mediaUrl: finalMediaUrl,
-        fileSizeBytes: f.fileSizeBytes || (f.rawFile ? f.rawFile.size : 2500000),
+        mediaUrl: f.mediaUrl,
+        fileSizeBytes: f.fileSizeBytes || 2500000,
         capturedAt: f.capturedAt || new Date().toISOString(),
         uploadedAt: new Date().toISOString(),
         location: f.location || '',
@@ -670,16 +650,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         isCreativeWork: Boolean(f.isCreativeWork || currentUser.Role === 'Creative Designer'),
         reviewStatus: 'Pending',
         folderPath
-      };
-
-      created.push(uploadItem);
-
-      // Direct append to Google Sheet Uploads tab
-      if (token) {
-        saveUploadToLiveSheet(token, uploadItem, appConfig.sheetId.trim()).catch((err) =>
-          console.warn('Google Sheet upload append warning:', err)
-        );
-      }
+      });
     }
 
     setUploads((prev) => [...created, ...prev]);
@@ -722,17 +693,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })
     }).catch((err) => console.error('Failed to save upload review to server:', err));
 
-    // Save review to Google Sheet Uploads tab
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      updateUploadReviewInLiveSheet(token, id, {
-        reviewStatus: decision,
-        reviewNote: note || target.reviewNote,
-        reviewedBy: currentUser.Email,
-        topPick: decision === 'Top pick' ? true : undefined
-      }, appConfig.sheetId.trim()).catch((err) => console.warn('Google Sheet review sync warning:', err));
-    }
-
     if (decision === 'Reshoot' || decision === 'Top pick') {
       setSyncLogs((prev) => [
         {
@@ -740,39 +700,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           time: now,
           stage: 'followups',
           state: 'Info',
-          detail: `${decision} for ${id} was saved to Google Sheets and local server.`
+          detail: `${decision} for ${id} was saved to the server. ClickUp was not updated because this app has no ClickUp write client.`
         },
         ...prev
       ]);
     }
   };
 
-  const toggleUsedInFinal = async (id: string) => {
-    let nextUsed = false;
-    setUploads((prev) =>
-      prev.map((u) => {
-        if (u.id === id) {
-          nextUsed = !u.usedInFinal;
-          return { ...u, usedInFinal: nextUsed };
-        }
-        return u;
-      })
-    );
+  const toggleUsedInFinal = (id: string) => {
+    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u)));
     fetch('/api/uploads/toggle-final', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     }).catch((err) => console.error('Failed to toggle final on server:', err));
-
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      updateUploadReviewInLiveSheet(token, id, {
-        usedInFinal: nextUsed
-      }, appConfig.sheetId.trim()).catch((err) => console.warn('Google Sheet toggle final sync warning:', err));
-    }
   };
 
-  const approveFinalCreative = async (id: string) => {
+  const approveFinalCreative = (id: string) => {
     if (!currentUser || (!isTechnicalAdmin && !isDirector)) return;
     const now = new Date().toISOString();
     setUploads((prev) =>
@@ -797,17 +741,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         creativeApprovedAt: now
       })
     }).catch((err) => console.error('Failed to save final creative approval on server:', err));
-
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      updateUploadReviewInLiveSheet(token, id, {
-        usedInFinal: true,
-        creativeApprovedBy: currentUser.Email
-      }, appConfig.sheetId.trim()).catch((err) => console.warn('Google Sheet creative approval sync warning:', err));
-    }
   };
 
-  const acknowledgeDirection = async (feedbackId: string, reply?: string) => {
+  const acknowledgeDirection = (feedbackId: string, reply?: string) => {
     if (!currentUser) return;
     const now = new Date().toISOString();
     setDirections((prev) =>
@@ -830,38 +766,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: JSON.stringify({ feedbackId, email: currentUser.Email, reply })
     }).catch((err) => console.error('Failed to save direction acknowledgment to server:', err));
 
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      acknowledgeDirectionInLiveSheet(token, feedbackId, currentUser.Email, reply, appConfig.sheetId.trim()).catch(
-        (err) => console.warn('Google Sheet direction acknowledgment sync warning:', err)
-      );
-    }
-
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `${currentUser.Name} acknowledged direction ${feedbackId} (saved to Google Sheets and server).`
+        detail: `${currentUser.Name} acknowledged direction ${feedbackId} on the server.`
       },
       ...prev
     ]);
   };
 
-  const publishDirection = async (feedbackId: string) => {
+  const publishDirection = (feedbackId: string) => {
     if (!canPublish || !currentUser) return;
     const now = new Date().toISOString();
-    let publishedItem: DirectionMessage | undefined;
-
     setDirections((prev) =>
-      prev.map((d) => {
-        if (d.feedbackId === feedbackId) {
-          publishedItem = { ...d, status: 'Published', sentAt: now };
-          return publishedItem;
-        }
-        return d;
-      })
+      prev.map((d) => (d.feedbackId === feedbackId ? { ...d, status: 'Published', sentAt: now } : d))
     );
     fetch('/api/directions/publish', {
       method: 'POST',
@@ -869,46 +790,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       body: JSON.stringify({ feedbackId })
     }).catch((err) => console.error('Failed to publish direction to server:', err));
 
-    const token = googleToken || (await getAccessToken());
-    if (token && publishedItem) {
-      saveDirectionToLiveSheet(token, publishedItem, appConfig.sheetId.trim()).catch((err) =>
-        console.warn('Google Sheet direction publish sync warning:', err)
-      );
-    }
-
     setSyncLogs((prev) => [
       {
         id: Math.random().toString(),
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `${currentUser.Name} published direction ${feedbackId} to Google Sheets and server.`
+        detail: `${currentUser.Name} published direction ${feedbackId} on the server.`
       },
       ...prev
     ]);
   };
 
-  const addShiftReport = async (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => {
+  const addShiftReport = (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => {
     const siteMeta = sites.find((s) => s.SiteName === report.site) || sites[0];
     const reportId = `REP-${formatYmdClean(new Date())}-${siteMeta.Code}-${String(shiftReports.length + 1).padStart(2, '0')}`;
     const newReport: ShiftReport = { ...report, reportId, isLate: false };
     setShiftReports((prev) => [newReport, ...prev]);
-
     fetch('/api/reports', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ report: newReport })
     }).catch((err) => console.error('Failed to save shift report to server:', err));
-
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      saveReportToLiveSheet(token, newReport, appConfig.sheetId.trim()).catch((err) =>
-        console.warn('Google Sheet report save sync warning:', err)
-      );
-    }
   };
 
-  const signOffReport = async (reportId: string) => {
+  const signOffReport = (reportId: string) => {
     setShiftReports((prev) =>
       prev.map((r) => (r.reportId === reportId ? { ...r, signedOff: true, verified: true } : r))
     );
@@ -917,13 +823,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ reportId })
     }).catch((err) => console.error('Failed to sign off report on server:', err));
-
-    const token = googleToken || (await getAccessToken());
-    if (token) {
-      signOffReportInLiveSheet(token, reportId, appConfig.sheetId.trim()).catch((err) =>
-        console.warn('Google Sheet report sign off sync warning:', err)
-      );
-    }
   };
 
   const triggerManualSync = async (): Promise<ConnectorReport[]> => {
@@ -976,7 +875,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setLiveDriveData(null);
     fetch('/api/admin/reset-sample', {
       method: 'POST'
-    }).catch((err) => console.error('Failed to reset sample data on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to reset sample data on server:', err));
   };
 
   const updateAppConfig = async (patch: Partial<AppIntegrationConfig>): Promise<ActionResult> => {
@@ -991,33 +891,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   };
 
-  const saveDirectory = async (
-    url: string,
-    method: string,
-    body?: unknown,
-    personToSync?: Person
-  ): Promise<ActionResult> => {
+  const saveDirectory = async (url: string, method: string, body?: unknown): Promise<ActionResult> => {
     try {
-      // 1. Write directly to Google Sheet 'People' tab if token is available
-      const token = googleToken || (await getAccessToken());
-      if (token && personToSync) {
-        try {
-          if (personToSync.Active === false) {
-            await deactivatePersonInLiveSheet(token, personToSync.Email, appConfig.sheetId.trim());
-          } else {
-            await savePersonToLiveSheet(token, personToSync, appConfig.sheetId.trim());
-          }
-        } catch (sheetErr) {
-          console.warn('Google Sheet people sync warning:', sheetErr);
-        }
-      }
-
-      // 2. Also save to server state as local fallback
       const data = await saveServerSettings<{ people: Person[]; message: string }>(url, method, body);
       if (!Array.isArray(data.people)) throw new Error('Server did not confirm the updated roster.');
       setPeople(sanitizeDirectory(data.people));
       window.dispatchEvent(new Event('app-settings-saved'));
-      return { ok: true, message: data.message || 'Access saved and synced to Google Sheets.' };
+      return { ok: true, message: data.message || 'Access saved. Active sessions update within five seconds.' };
     } catch (error) {
       return { ok: false, message: error instanceof Error ? error.message : 'Could not save access changes.' };
     }
@@ -1035,16 +915,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (people.some((p) => normalizeEmail(p.Email) === normalizeEmail(email))) {
       return { ok: false, message: 'That email is already on the roster. Edit the existing row.' };
     }
-
-    const newPerson: Person = {
-      Email: email,
-      Name: input.name.trim() || email.split('@')[0],
-      Role: input.role,
-      Site: input.site,
-      Shift: input.shift,
-      Active: true
-    };
-    return saveDirectory('/api/admin/users', 'POST', input, newPerson);
+    return saveDirectory('/api/admin/users', 'POST', input);
   };
 
   const updateDirectoryUser = async (
@@ -1065,18 +936,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!people.some((p) => normalizeEmail(p.Email) === key)) {
       return { ok: false, message: 'That person is not on the roster.' };
     }
-
-    const existing = people.find((p) => normalizeEmail(p.Email) === key);
-    const updatedPerson: Person = {
-      Email: email,
-      Name: patch.Name ?? existing?.Name ?? email.split('@')[0],
-      Role: patch.Role ?? existing?.Role ?? 'Officer',
-      Site: patch.Site ?? existing?.Site ?? 'Cebu City',
-      Shift: patch.Shift ?? existing?.Shift ?? 'Peak',
-      Active: patch.Active !== undefined ? patch.Active : (existing?.Active !== false)
-    };
-
-    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch, updatedPerson);
+    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch);
   };
 
   const setActiveShift = async (shiftName: string): Promise<ActionResult> => {
@@ -1089,18 +949,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (normalizeEmail(email) === normalizeEmail(currentUser?.Email)) {
       return { ok: false, message: 'You cannot remove the signed-in admin account.' };
     }
-
-    const existing = people.find((p) => normalizeEmail(p.Email) === normalizeEmail(email));
-    const deactivatedPerson: Person = {
-      Email: email,
-      Name: existing?.Name ?? email.split('@')[0],
-      Role: existing?.Role ?? 'Officer',
-      Site: existing?.Site ?? 'Cebu City',
-      Shift: existing?.Shift ?? 'Peak',
-      Active: false
-    };
-
-    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE', undefined, deactivatedPerson);
+    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE');
   };
 
   const updateUpload = (
@@ -1116,7 +965,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
-    }).catch((err) => console.error('Failed to update upload on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to update upload on server:', err));
 
     return { ok: true, message: `Updated upload ${id} on the server.` };
   };
@@ -1128,7 +978,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUploads((prev) => prev.filter((u) => u.id !== id));
     fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete upload on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete upload on server:', err));
 
     return { ok: true, message: `Deleted upload ${id} from server. The file was not deleted from Google Drive.` };
   };
@@ -1139,7 +990,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setUploads([]);
     fetch('/api/admin/records/uploads', {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete all uploads on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete all uploads on server:', err));
 
     return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from server. Drive files were not touched.` };
   };
@@ -1156,7 +1008,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
-    }).catch((err) => console.error('Failed to update direction on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to update direction on server:', err));
 
     return { ok: true, message: `Updated direction ${feedbackId} on the server.` };
   };
@@ -1168,7 +1021,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDirections((prev) => prev.filter((d) => d.feedbackId !== feedbackId));
     fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete direction on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete direction on server:', err));
 
     return { ok: true, message: `Deleted direction ${feedbackId} from server. ClickUp was not changed.` };
   };
@@ -1179,7 +1033,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setDirections([]);
     fetch('/api/admin/records/directions', {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete all directions on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete all directions on server:', err));
 
     return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from server. ClickUp was not changed.` };
   };
@@ -1196,7 +1051,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch)
-    }).catch((err) => console.error('Failed to update report on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to update report on server:', err));
 
     return { ok: true, message: `Updated report ${reportId} on the server.` };
   };
@@ -1208,7 +1064,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setShiftReports((prev) => prev.filter((r) => r.reportId !== reportId));
     fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete report on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete report on server:', err));
 
     return { ok: true, message: `Deleted report ${reportId} from server.` };
   };
@@ -1219,7 +1076,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setShiftReports([]);
     fetch('/api/admin/records/reports', {
       method: 'DELETE'
-    }).catch((err) => console.error('Failed to delete all reports on server:', err));
+    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
+      .catch((err) => console.error('Failed to delete all reports on server:', err));
 
     return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from server.` };
   };
