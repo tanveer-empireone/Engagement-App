@@ -38,6 +38,10 @@ import {
   canOpenAdminPanel,
   canSeeIntegrations,
   canUseCapture,
+  isAdminPerson,
+  isDirectorPerson,
+  canApproveFinalCreative,
+  canGrantAdminRole,
   normalizeEmail,
   resolveSessionPerson,
   samePersonRecord,
@@ -116,6 +120,9 @@ interface AppContextType {
   canPublish: boolean;
   isWide: boolean;
   isAdmin: boolean;
+  isTechnicalAdmin: boolean;
+  isDirector: boolean;
+  canApproveCreative: boolean;
   showCaptureForAdmin: boolean;
   setShowCaptureForAdmin: (value: boolean) => ActionResult;
   canUseCapture: boolean;
@@ -133,6 +140,7 @@ interface AppContextType {
   addDirectoryUser: (input: DirectoryUserInput) => ActionResult;
   updateDirectoryUser: (email: string, patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => ActionResult;
   removeDirectoryUser: (email: string) => ActionResult;
+  setActiveShift: (shift: string) => ActionResult;
 
   updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => ActionResult;
   deleteUpload: (id: string) => ActionResult;
@@ -163,9 +171,11 @@ interface AppContextType {
     nothingConfidential: boolean;
     topPick: boolean;
     ext?: string;
+    isCreativeWork?: boolean;
   }>) => Promise<UploadItem[]>;
   reviewUpload: (id: string, decision: ReviewStatus, note?: string) => Promise<void>;
   toggleUsedInFinal: (id: string) => void;
+  approveFinalCreative: (id: string) => void;
   acknowledgeDirection: (feedbackId: string, reply?: string) => void;
   publishDirection: (feedbackId: string) => void;
   addShiftReport: (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => void;
@@ -261,14 +271,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
   }, [googleEmail, googleName, googlePhoto, people]);
 
+  const isTechnicalAdmin = isAdminPerson(currentUser);
+  const isDirector = isDirectorPerson(currentUser);
   const isAdmin = canOpenAdminPanel(currentUser);
   const captureAllowed = canUseCapture(currentUser, showCaptureForAdmin);
   const integrationsAllowed = canSeeIntegrations(currentUser);
-  const isWide = currentUser?.Role === 'Admin' || currentUser?.Role === 'Engagement Lead';
+  const isWide = currentUser?.Role === 'Admin' || currentUser?.Role === 'Director';
   const canReview = Boolean(
     isWide || currentUser?.Role === 'Site Manager' || currentUser?.Role === 'Creative Designer'
   );
   const canPublish = isWide;
+  const canApproveCreative = canApproveFinalCreative(currentUser);
 
   const setClickUpToken = (tok: string) => {
     setClickUpTokenState(tok);
@@ -586,6 +599,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     consentSigned: boolean;
     nothingConfidential: boolean;
     topPick: boolean;
+    isCreativeWork?: boolean;
     ext?: string;
   }>): Promise<UploadItem[]> => {
     if (!currentUser) return [];
@@ -638,6 +652,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         consentSigned: f.consentSigned,
         nothingConfidential: f.nothingConfidential,
         topPick: f.topPick,
+        isCreativeWork: Boolean(f.isCreativeWork || currentUser.Role === 'Creative Designer'),
         reviewStatus: 'Pending',
         folderPath
       });
@@ -704,6 +719,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id })
     }).catch((err) => console.error('Failed to toggle final on server:', err));
+  };
+
+  const approveFinalCreative = (id: string) => {
+    if (!currentUser || (!isTechnicalAdmin && !isDirector)) return;
+    const now = new Date().toISOString();
+    setUploads((prev) =>
+      prev.map((u) =>
+        u.id === id
+          ? {
+              ...u,
+              usedInFinal: true,
+              creativeApprovedBy: currentUser.Email,
+              creativeApprovedAt: now
+            }
+          : u
+      )
+    );
+    fetch('/api/uploads/toggle-final', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id,
+        usedInFinal: true,
+        creativeApprovedBy: currentUser.Email,
+        creativeApprovedAt: now
+      })
+    }).catch((err) => console.error('Failed to save final creative approval on server:', err));
   };
 
   const acknowledgeDirection = (feedbackId: string, reply?: string) => {
@@ -854,6 +896,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const addDirectoryUser = (input: DirectoryUserInput): ActionResult => {
     if (!isAdmin) return denyAdmin();
+    if (input.role === 'Admin' && !isTechnicalAdmin) {
+      return { ok: false, message: 'Directors cannot grant Technical Admin access. Only a Technical Admin can assign the Admin role.' };
+    }
     const email = input.email.trim();
     if (!email.includes('@') || email.startsWith('@') || email.endsWith('@')) {
       return { ok: false, message: 'Enter a full email address.' };
@@ -893,8 +938,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     email: string,
     patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>
   ): ActionResult => {
-    if (!isAdmin) return denyAdmin();
     const key = normalizeEmail(email);
+    const isSelfShift =
+      currentUser &&
+      normalizeEmail(currentUser.Email) === key &&
+      Object.keys(patch).length === 1 &&
+      'Shift' in patch;
+
+    if (!isAdmin && !isSelfShift) return denyAdmin();
+    if (patch.Role === 'Admin' && !isTechnicalAdmin) {
+      return { ok: false, message: 'Directors cannot grant Technical Admin access. Only a Technical Admin can assign the Admin role.' };
+    }
     if (!people.some((p) => normalizeEmail(p.Email) === key)) {
       return { ok: false, message: 'That person is not on the roster.' };
     }
@@ -915,6 +969,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       .catch((err) => console.error('Failed to update user on server:', err));
 
     return { ok: true, message: `Updated ${email} on the server.` };
+  };
+
+  const setActiveShift = (shiftName: string): ActionResult => {
+    if (!currentUser) return { ok: false, message: 'You must be signed in to select a shift.' };
+    return updateDirectoryUser(currentUser.Email, { Shift: shiftName });
   };
 
   const removeDirectoryUser = (email: string): ActionResult => {
@@ -1104,6 +1163,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canPublish,
         isWide,
         isAdmin,
+        isTechnicalAdmin,
+        isDirector,
+        canApproveCreative,
         showCaptureForAdmin,
         setShowCaptureForAdmin,
         canUseCapture: captureAllowed,
@@ -1119,6 +1181,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addDirectoryUser,
         updateDirectoryUser,
         removeDirectoryUser,
+        setActiveShift,
         updateUpload,
         deleteUpload,
         deleteAllUploads,
@@ -1131,6 +1194,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         addBatchUploads,
         reviewUpload,
         toggleUsedInFinal,
+        approveFinalCreative,
         acknowledgeDirection,
         publishDirection,
         addShiftReport,

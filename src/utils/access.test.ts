@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { Person } from '../types';
 import {
   ADMIN_EMAIL,
+  canApproveFinalCreative,
+  canGrantAdminRole,
   canOpenAdminPanel,
   canSeeIntegrations,
   canUseCapture,
@@ -117,3 +119,25 @@ test('a removed user stays out of the product until access is restored', () => {
   assert.equal(selectAppShell({ authReady: true, hasGoogleUser: true, person }), 'blocked');
   assert.equal(canOpenAdminPanel(person), false);
 });
+
+test('director has scoped management access but cannot see integrations or grant admin role', () => {
+  const director: Person = {
+    Email: 'director@empireonecx.com',
+    Name: 'Sarah Director',
+    Role: 'Director',
+    Site: 'Toronto',
+    Shift: 'Day',
+    Active: true
+  };
+  assert.equal(canOpenAdminPanel(director), true);
+  assert.equal(canSeeIntegrations(director), false);
+  assert.equal(canGrantAdminRole(director), false);
+  assert.equal(canGrantAdminRole(tanveer), true);
+  assert.equal(canApproveFinalCreative(director), true);
+  assert.equal(canApproveFinalCreative(tanveer), true);
+});
+
+test('legacy Engagement Lead role is migrated to Director', () => {
+  assert.equal(clampRole('sarah@empireonecx.com', 'Engagement Lead'), 'Director');
+});
+

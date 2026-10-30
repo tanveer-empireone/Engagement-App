@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useSignedInApp } from '../context/AppContext';
+import { SHIFTS_LIST } from '../utils/idGenerator';
 import {
   Camera,
   CheckCircle2,
@@ -8,7 +9,8 @@ import {
   Send,
   Star,
   ChevronRight,
-  ArrowRight
+  ArrowRight,
+  AlertCircle
 } from 'lucide-react';
 
 interface TodayViewProps {
@@ -26,7 +28,8 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     uploads,
     shiftReports,
     getTopPickRoom,
-    canUseCapture
+    canUseCapture,
+    setActiveShift
   } = useSignedInApp();
 
   const [activeReplyId, setActiveReplyId] = useState<string | null>(null);
@@ -37,6 +40,12 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     (u) =>
       u.officer.toLowerCase() === currentUser.Email.toLowerCase() &&
       u.shiftDate === todayYmd
+  );
+
+  const myReshootUploads = uploads.filter(
+    (u) =>
+      u.officer.toLowerCase() === currentUser.Email.toLowerCase() &&
+      u.reviewStatus === 'Reshoot'
   );
 
   const topPickRoom = getTopPickRoom(currentUser.Site, currentUser.Shift || 'Peak', 'Daily', '', todayYmd);
@@ -71,18 +80,30 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
 
   return (
     <div className="space-y-4 pb-28 md:pb-12 max-w-xl mx-auto">
-      {/* 1. Lazy Brain Greeting: Minimalist, human, single visual anchor */}
+      {/* 1. Greeting & Rotating Shift Selector */}
       <div className="flex items-center justify-between pt-1 px-1">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-slate-900">
             Hi, {currentUser.Name.split(' ')[0]}
           </h2>
-          <p className="text-xs text-slate-500 font-medium">
-            {currentUser.Site} · {currentUser.Shift || 'Peak'} Shift
-          </p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-xs text-slate-500 font-medium">{currentUser.Site} · </span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Shift:</span>
+            <select
+              value={currentUser.Shift || 'Peak'}
+              onChange={(e) => setActiveShift(e.target.value)}
+              aria-label="Select active rotating shift"
+              className="text-xs font-semibold text-indigo-700 bg-indigo-50/80 hover:bg-indigo-100/80 border border-indigo-200/60 rounded-lg px-2 py-0.5 cursor-pointer transition-colors"
+              title="Click to switch your working shift for today"
+            >
+              {SHIFTS_LIST.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
-        {/* Quick Shift Status: 1 effortless glance */}
+        {/* Quick Shift Status */}
         <div className="flex items-center gap-2 text-xs">
           <div className="text-right">
             <span className="font-bold text-slate-900 tabular-nums">{myTodayUploads.length}</span>
@@ -95,6 +116,55 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
           </div>
         </div>
       </div>
+
+      {/* Reshoot Feedback Attention Banner */}
+      {myReshootUploads.length > 0 && (
+        <div className="p-4 rounded-3xl bg-amber-50/90 border border-amber-200/80 shadow-xs space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="p-1.5 rounded-xl bg-amber-100 text-amber-700">
+                <AlertCircle className="w-4 h-4" />
+              </span>
+              <div>
+                <h3 className="text-xs font-bold text-amber-950">Action Required: Reshoot Requested</h3>
+                <p className="text-[11px] text-amber-800">
+                  {myReshootUploads.length} submission{myReshootUploads.length > 1 ? 's need' : ' needs'} attention based on reviewer feedback.
+                </p>
+              </div>
+            </div>
+            {canUseCapture && (
+              <button
+                type="button"
+                onClick={onNavigateToCapture}
+                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-amber-600 hover:bg-amber-700 text-white shadow-xs cursor-pointer transition-colors"
+              >
+                Reshoot
+              </button>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            {myReshootUploads.slice(0, 3).map((item) => (
+              <div key={item.id} className="p-2.5 rounded-2xl bg-white/90 border border-amber-200/60 flex items-start gap-3">
+                <img
+                  src={item.mediaUrl}
+                  alt={item.id}
+                  className="w-12 h-12 rounded-xl object-cover shrink-0 border border-slate-200"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="text-xs font-bold text-slate-900 truncate">{item.topic}</span>
+                    <span className="text-[10px] text-slate-400">{item.spot}</span>
+                  </div>
+                  <p className="text-[11px] text-amber-900 font-medium mt-0.5 bg-amber-50/80 p-1.5 rounded-lg border border-amber-100">
+                    "{item.reviewNote || 'Please capture a clearer photo with better lighting or participants in frame.'}"
+                  </p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {canUseCapture && (
       <button

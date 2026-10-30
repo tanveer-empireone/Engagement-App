@@ -1,4 +1,4 @@
-export type Role = 'Admin' | 'Engagement Lead' | 'Site Manager' | 'Creative Designer' | 'Officer';
+export type Role = 'Admin' | 'Director' | 'Site Manager' | 'Creative Designer' | 'Officer';
 
 export interface Site {
   Code: string; // e.g. 'CEB', 'CAR', 'SNC', 'URD', 'TOR', 'SMR'
@@ -54,6 +54,9 @@ export interface UploadItem {
   nothingConfidential: boolean;
   topPick: boolean;
   usedInFinal?: boolean;
+  isCreativeWork?: boolean;
+  creativeApprovedBy?: string;
+  creativeApprovedAt?: string;
   reviewStatus: ReviewStatus;
   reviewedBy?: string;
   reviewedAt?: string;

@@ -16,7 +16,7 @@ const ADMIN_EMAIL = 'tanveer@empireonecx.com';
 export interface PersonRecord {
   Email: string;
   Name: string;
-  Role: 'Admin' | 'Engagement Lead' | 'Site Manager' | 'Creative Designer' | 'Officer';
+  Role: 'Admin' | 'Director' | 'Site Manager' | 'Creative Designer' | 'Officer';
   Site: string;
   Shift: string;
   Active: boolean;
@@ -473,15 +473,19 @@ async function startServer() {
     res.json({ ok: true, uploads: store.uploads });
   });
 
-  // REST API: Toggle Used In Final
+  // REST API: Toggle Used In Final / Creative Approval
   app.post('/api/uploads/toggle-final', (req, res) => {
-    const { id } = req.body || {};
+    const { id, usedInFinal, creativeApprovedBy, creativeApprovedAt } = req.body || {};
     const store = readStore();
     const index = store.uploads.findIndex((u) => u.id === id);
     if (index !== -1) {
+      const current = store.uploads[index];
+      const targetUsed = typeof usedInFinal === 'boolean' ? usedInFinal : !current.usedInFinal;
       store.uploads[index] = {
-        ...store.uploads[index],
-        usedInFinal: !store.uploads[index].usedInFinal
+        ...current,
+        usedInFinal: targetUsed,
+        creativeApprovedBy: targetUsed ? (creativeApprovedBy || current.creativeApprovedBy) : undefined,
+        creativeApprovedAt: targetUsed ? (creativeApprovedAt || new Date().toISOString()) : undefined
       };
       writeStore(store);
     }

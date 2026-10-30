@@ -5,7 +5,7 @@ export const ADMIN_EMAIL = 'tanveer@empireonecx.com';
 
 export const ASSIGNABLE_ROLES: Role[] = [
   'Admin',
-  'Engagement Lead',
+  'Director',
   'Site Manager',
   'Creative Designer',
   'Officer'
@@ -26,6 +26,8 @@ export function isAdminEmail(email: string | null | undefined): boolean {
 /** Keep a real role. The original admin email is always Admin. Unknown values become Officer. */
 export function clampRole(email: string, role: string | null | undefined): Role {
   if (isAdminEmail(email)) return 'Admin';
+  // Legacy migration for Engagement Lead
+  if (role === 'Engagement Lead') return 'Director';
   const candidate = (role || 'Officer') as Role;
   if (!KNOWN_ROLES.has(candidate)) return 'Officer';
   return candidate;
@@ -95,13 +97,28 @@ export function isAdminPerson(person: Person | null): boolean {
   return !!person && person.Active !== false && person.Role === 'Admin';
 }
 
+export function isDirectorPerson(person: Person | null): boolean {
+  return !!person && person.Active !== false && person.Role === 'Director';
+}
+
+/** Both Technical Admins and Directors can open management (with appropriately scoped capabilities) */
 export function canOpenAdminPanel(person: Person | null): boolean {
+  return isAdminPerson(person) || isDirectorPerson(person);
+}
+
+/** Integrations & server configuration is strictly a Technical Admin tool */
+export function canSeeIntegrations(person: Person | null): boolean {
   return isAdminPerson(person);
 }
 
-/** Integrations is an admin tool. Other roles do not see it. */
-export function canSeeIntegrations(person: Person | null): boolean {
+/** Only Technical Admins can grant the Admin role. Directors cannot grant Admin access. */
+export function canGrantAdminRole(person: Person | null): boolean {
   return isAdminPerson(person);
+}
+
+/** Directors and Technical Admins have final creative sign-off authority */
+export function canApproveFinalCreative(person: Person | null): boolean {
+  return isAdminPerson(person) || isDirectorPerson(person);
 }
 
 /** Capture is hidden for admins until an admin turns it back on. Everyone else still sees it. */

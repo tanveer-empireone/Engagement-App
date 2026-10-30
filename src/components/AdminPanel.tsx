@@ -4,7 +4,7 @@ import { ASSIGNABLE_ROLES, isAdminEmail } from '../utils/access';
 import { SHIFTS_LIST } from '../utils/idGenerator';
 import { testAppsScriptConnection } from '../services/appsScriptService';
 import { DirectionMessage, Person, ReviewStatus, Role, ShiftReport, UploadItem } from '../types';
-import { ShieldCheck, X } from 'lucide-react';
+import { ShieldCheck, X, Edit2, Save, RotateCcw } from 'lucide-react';
 
 type AdminSection = 'people' | 'records' | 'configuration' | 'sync';
 type RecordTab = 'uploads' | 'directions' | 'reports';
@@ -33,35 +33,38 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 overflow-y-auto">
+    <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-hidden">
       <div
         data-testid="admin-panel"
         role="dialog"
         aria-labelledby="admin-panel-title"
-        className="glass-card w-full sm:max-w-3xl max-h-[92vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl border border-white/80 shadow-xl flex flex-col"
+        className="glass-card w-full sm:max-w-3xl h-[88vh] max-h-[780px] rounded-3xl border border-white/80 shadow-2xl flex flex-col overflow-hidden"
       >
-        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur-md border-b border-slate-200/70">
-          <div className="px-5 py-4 flex items-start justify-between gap-3">
+        <div className="shrink-0 bg-white/85 backdrop-blur-md border-b border-slate-200/70">
+          <div className="px-6 py-4 flex items-start justify-between gap-3">
             <div>
-              <div className="text-[10px] font-bold uppercase tracking-widest text-indigo-600">Admin</div>
-              <h2 id="admin-panel-title" className="text-lg font-bold text-slate-900">
+              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-indigo-50 border border-indigo-200/60 text-[10px] font-bold uppercase tracking-wider text-indigo-700">
+                <ShieldCheck className="w-3 h-3 text-indigo-600" />
+                Admin Console
+              </div>
+              <h2 id="admin-panel-title" className="text-lg font-bold text-slate-900 mt-1">
                 Engagement settings
               </h2>
-              <p className="text-[11px] text-slate-500 mt-0.5">
-                Signed in as {app.currentUser.Email}. Changes are saved to the server.
+              <p className="text-xs text-slate-500 mt-0.5">
+                Signed in as <span className="font-medium text-slate-700">{app.currentUser.Email}</span>. Changes are saved to the server.
               </p>
             </div>
             <button
               type="button"
               onClick={onClose}
               aria-label="Close admin panel"
-              className="p-2 rounded-xl text-slate-500 hover:bg-slate-100 cursor-pointer"
+              className="p-2 rounded-xl text-slate-400 hover:text-slate-700 hover:bg-slate-100/80 transition-colors cursor-pointer"
             >
-              <X className="w-4 h-4" />
+              <X className="w-5 h-5" />
             </button>
           </div>
 
-          <div className="px-5 py-2.5 border-t border-slate-100 bg-slate-50/80 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+          <div className="px-6 py-2.5 border-t border-slate-200/50 bg-slate-50/70 flex items-center gap-2 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {(
               [
                 ['people', 'People'],
@@ -74,9 +77,9 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
                 key={id}
                 type="button"
                 onClick={() => setSection(id)}
-                className={`px-3.5 py-2 rounded-xl text-xs font-semibold cursor-pointer shrink-0 transition-all ${
+                className={`px-4 py-2 rounded-xl text-xs font-semibold cursor-pointer shrink-0 transition-all ${
                   section === id
-                    ? 'bg-indigo-600 text-white shadow-xs'
+                    ? 'bg-indigo-600 text-white shadow-sm'
                     : 'bg-white/80 text-slate-600 hover:text-slate-900 hover:bg-white border border-slate-200/60'
                 }`}
               >
@@ -86,8 +89,8 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
           </div>
         </div>
 
-        <div className="px-5 py-4 space-y-4">
-          <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2">
+        <div className="flex-1 overflow-y-auto custom-scrollbar px-6 py-5 space-y-4 pb-8">
+          <div className="p-3.5 rounded-2xl bg-white/80 border border-slate-200/70 flex flex-wrap items-center justify-between gap-2 shadow-xs">
             <div>
               <div className="text-xs font-bold text-slate-900">Capture media</div>
               <p className="text-[11px] text-slate-500">
@@ -100,7 +103,7 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
               type="button"
               data-testid="toggle-admin-capture"
               onClick={() => show(app.setShowCaptureForAdmin(!app.showCaptureForAdmin))}
-              className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
+              className="px-3.5 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white cursor-pointer transition-colors shadow-xs"
             >
               {app.showCaptureForAdmin ? 'Hide Capture' : 'Show Capture'}
             </button>
@@ -126,12 +129,17 @@ export const AdminPanel: React.FC<{ onClose: () => void }> = ({ onClose }) => {
 };
 
 const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string }) => void }> = ({ show }) => {
-  const { people, sites, addDirectoryUser, updateDirectoryUser, removeDirectoryUser } = useSignedInApp();
+  const { people, sites, addDirectoryUser, updateDirectoryUser, removeDirectoryUser, isTechnicalAdmin } = useSignedInApp();
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [role, setRole] = useState<Role>('Officer');
   const [site, setSite] = useState(sites[0]?.SiteName || 'Cebu City');
   const [shift, setShift] = useState('Peak');
+
+  // Technical Admins can assign all roles. Directors can assign team roles except Admin.
+  const allowedRoles = isTechnicalAdmin
+    ? ASSIGNABLE_ROLES
+    : ASSIGNABLE_ROLES.filter((r) => r !== 'Admin');
 
   return (
     <div className="space-y-4">
@@ -149,9 +157,11 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         }}
       >
         <div>
-          <h3 className="text-sm font-bold text-slate-900">Add a user</h3>
+          <h3 className="text-sm font-bold text-slate-900">Add team member</h3>
           <p className="text-[11px] text-slate-500">
-            Set a role before they sign in. Choosing Admin gives them this panel and Integrations. tanveer@empireonecx.com stays an admin.
+            {isTechnicalAdmin
+              ? 'Assign an operational role or Technical Admin. tanveer@empireonecx.com stays Root Admin.'
+              : 'Add Engagement Officers, Site Managers, Creative Designers, or Directors.'}
           </p>
         </div>
         <div className="grid sm:grid-cols-2 gap-2">
@@ -177,9 +187,9 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
             aria-label="New user role"
             className="glass-input rounded-xl px-3 py-2 text-xs"
           >
-            {ASSIGNABLE_ROLES.map((item) => (
+            {allowedRoles.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {item === 'Admin' ? 'Technical Admin' : item}
               </option>
             ))}
           </select>
@@ -210,13 +220,17 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         </div>
         <button
           type="submit"
-          className="px-3 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer"
+          className="px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer shadow-xs transition-colors"
         >
           Add user
         </button>
       </form>
 
-      <div className="space-y-2">
+      <div className="space-y-2.5">
+        <div className="flex items-center justify-between px-1">
+          <h4 className="text-xs font-bold uppercase tracking-wider text-slate-500">Roster & Permissions</h4>
+          <span className="text-[11px] text-slate-400">{people.length} member{people.length === 1 ? '' : 's'}</span>
+        </div>
         {people.length === 0 && (
           <p className="text-xs text-slate-500">No roster rows yet. A Google sign-in adds the signed-in account.</p>
         )}
@@ -225,6 +239,7 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
             key={person.Email}
             person={person}
             sites={sites.map((item) => item.SiteName)}
+            isTechnicalAdmin={isTechnicalAdmin}
             onUpdate={(patch) => show(updateDirectoryUser(person.Email, patch))}
             onRemove={() => show(removeDirectoryUser(person.Email))}
           />
@@ -237,93 +252,201 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
 const PersonRow: React.FC<{
   person: Person;
   sites: string[];
+  isTechnicalAdmin: boolean;
   onUpdate: (patch: Partial<Pick<Person, 'Name' | 'Role' | 'Site' | 'Shift' | 'Active'>>) => void;
   onRemove: () => void;
-}> = ({ person, sites, onUpdate, onRemove }) => {
-  const admin = isAdminEmail(person.Email);
+}> = ({ person, sites, isTechnicalAdmin, onUpdate, onRemove }) => {
+  const isRootAdmin = isAdminEmail(person.Email);
+  const [isEditing, setIsEditing] = useState(false);
+  const [draftName, setDraftName] = useState(person.Name);
+  const [draftRole, setDraftRole] = useState<Role>(person.Role);
+  const [draftSite, setDraftSite] = useState(person.Site);
+  const [draftShift, setDraftShift] = useState(person.Shift || 'Peak');
+
+  const allowedRoles = isTechnicalAdmin
+    ? ASSIGNABLE_ROLES
+    : ASSIGNABLE_ROLES.filter((r) => r !== 'Admin');
+
+  const handleSave = () => {
+    onUpdate({
+      Name: draftName.trim() || person.Name,
+      Role: isRootAdmin ? 'Admin' : draftRole,
+      Site: draftSite,
+      Shift: draftShift
+    });
+    setIsEditing(false);
+  };
+
+  const handleCancel = () => {
+    setDraftName(person.Name);
+    setDraftRole(person.Role);
+    setDraftSite(person.Site);
+    setDraftShift(person.Shift || 'Peak');
+    setIsEditing(false);
+  };
+
+  const roleBadgeStyle = (r: Role) => {
+    switch (r) {
+      case 'Admin':
+        return 'bg-indigo-50 text-indigo-700 border-indigo-200';
+      case 'Director':
+        return 'bg-purple-50 text-purple-700 border-purple-200';
+      case 'Site Manager':
+        return 'bg-blue-50 text-blue-700 border-blue-200';
+      case 'Creative Designer':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      default:
+        return 'bg-slate-100 text-slate-700 border-slate-200';
+    }
+  };
+
   return (
-    <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
-      <div className="flex items-center justify-between gap-2">
+    <div className={`p-3.5 rounded-2xl bg-white/80 border transition-all ${isEditing ? 'border-indigo-400 ring-2 ring-indigo-100 shadow-sm' : 'border-slate-200/70 shadow-xs'}`}>
+      <div className="flex items-center justify-between gap-2 mb-2">
         <div className="min-w-0">
-          <div className="text-xs font-semibold text-slate-900 truncate">{person.Email}</div>
-          <div className="text-[10px] text-slate-500">{person.Active ? 'Access on' : 'Access removed'}</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-bold text-slate-900 truncate">{person.Email}</span>
+            <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${roleBadgeStyle(person.Role)}`}>
+              {person.Role === 'Admin' ? 'Technical Admin' : person.Role}
+            </span>
+          </div>
+          <div className="text-[11px] text-slate-500 mt-0.5">
+            {person.Active ? 'Active roster access' : 'Access deactivated'}
+          </div>
         </div>
-        {admin ? (
-          <span className="text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-            Admin
-          </span>
-        ) : person.Active ? (
-          <button
-            type="button"
-            onClick={onRemove}
-            className="text-[11px] font-semibold text-rose-600 hover:bg-rose-50 px-2 py-1 rounded-lg cursor-pointer"
-          >
-            Remove access
-          </button>
-        ) : (
-          <button
-            type="button"
-            onClick={() => onUpdate({ Active: true })}
-            className="text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 px-2 py-1 rounded-lg cursor-pointer"
-          >
-            Restore access
-          </button>
-        )}
+
+        <div className="flex items-center gap-1.5 shrink-0">
+          {!isEditing && (
+            <button
+              type="button"
+              onClick={() => setIsEditing(true)}
+              aria-label={`Edit ${person.Email}`}
+              className="px-2.5 py-1 text-xs font-semibold text-slate-600 hover:text-indigo-600 hover:bg-indigo-50 border border-slate-200 rounded-lg transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <Edit2 className="w-3 h-3" />
+              <span>Edit</span>
+            </button>
+          )}
+
+          {isRootAdmin ? (
+            <span className="text-[10px] font-semibold text-slate-400 px-2 py-1">Permanent Admin</span>
+          ) : person.Active ? (
+            <button
+              type="button"
+              onClick={onRemove}
+              className="text-[11px] font-semibold text-rose-600 hover:bg-rose-50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+            >
+              Remove access
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onUpdate({ Active: true })}
+              className="text-[11px] font-semibold text-emerald-700 hover:bg-emerald-50 px-2.5 py-1 rounded-lg transition-colors cursor-pointer"
+            >
+              Restore access
+            </button>
+          )}
+        </div>
       </div>
-      <div className="grid sm:grid-cols-4 gap-2">
-        <input
-          defaultValue={person.Name}
-          key={`${person.Email}-name-${person.Name}`}
-          aria-label={`Name for ${person.Email}`}
-          onBlur={(event) => {
-            if (event.target.value.trim() && event.target.value !== person.Name) {
-              onUpdate({ Name: event.target.value.trim() });
-            }
-          }}
-          className="glass-input rounded-xl px-3 py-2 text-xs"
-        />
-        {admin ? (
-          <div className="rounded-xl px-3 py-2 text-xs bg-slate-50 border border-slate-200 text-slate-500">Admin</div>
-        ) : (
-          <select
-            value={ASSIGNABLE_ROLES.includes(person.Role) ? person.Role : 'Officer'}
-            aria-label={`Role for ${person.Email}`}
-            onChange={(event) => onUpdate({ Role: event.target.value as Role })}
-            className="glass-input rounded-xl px-3 py-2 text-xs"
-          >
-            {ASSIGNABLE_ROLES.map((item) => (
-              <option key={item} value={item}>
-                {item}
-              </option>
-            ))}
-          </select>
-        )}
-        <select
-          value={person.Site}
-          aria-label={`Site for ${person.Email}`}
-          onChange={(event) => onUpdate({ Site: event.target.value })}
-          className="glass-input rounded-xl px-3 py-2 text-xs"
-        >
-          {!sites.includes(person.Site) && <option value={person.Site}>{person.Site}</option>}
-          {sites.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-        <select
-          value={person.Shift || 'Peak'}
-          aria-label={`Shift for ${person.Email}`}
-          onChange={(event) => onUpdate({ Shift: event.target.value })}
-          className="glass-input rounded-xl px-3 py-2 text-xs"
-        >
-          {SHIFTS_LIST.map((item) => (
-            <option key={item} value={item}>
-              {item}
-            </option>
-          ))}
-        </select>
-      </div>
+
+      {!isEditing ? (
+        <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-slate-600">
+          <div className="text-slate-700 font-medium">{person.Name}</div>
+          <span className="text-slate-300">•</span>
+          <div className="text-slate-600">{person.Site}</div>
+          <span className="text-slate-300">•</span>
+          <div className="text-slate-500">{person.Shift || 'Peak'} Shift</div>
+        </div>
+      ) : (
+        <div className="space-y-3 pt-2">
+          <div className="grid sm:grid-cols-4 gap-2">
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Name</label>
+              <input
+                type="text"
+                value={draftName}
+                onChange={(e) => setDraftName(e.target.value)}
+                placeholder="Name"
+                aria-label={`Name for ${person.Email}`}
+                className="glass-input rounded-xl px-3 py-1.5 text-xs w-full font-medium"
+              />
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Role</label>
+              {isRootAdmin ? (
+                <div className="rounded-xl px-3 py-1.5 text-xs bg-slate-100 border border-slate-200 text-slate-500 font-medium">Technical Admin</div>
+              ) : (
+                <select
+                  value={draftRole}
+                  aria-label={`Role for ${person.Email}`}
+                  onChange={(e) => setDraftRole(e.target.value as Role)}
+                  className="glass-input rounded-xl px-3 py-1.5 text-xs w-full"
+                >
+                  {allowedRoles.map((r) => (
+                    <option key={r} value={r}>
+                      {r === 'Admin' ? 'Technical Admin' : r}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Site</label>
+              <select
+                value={draftSite}
+                aria-label={`Site for ${person.Email}`}
+                onChange={(e) => setDraftSite(e.target.value)}
+                className="glass-input rounded-xl px-3 py-1.5 text-xs w-full"
+              >
+                {!sites.includes(draftSite) && <option value={draftSite}>{draftSite}</option>}
+                {sites.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-1">Shift</label>
+              <select
+                value={draftShift}
+                aria-label={`Shift for ${person.Email}`}
+                onChange={(e) => setDraftShift(e.target.value)}
+                className="glass-input rounded-xl px-3 py-1.5 text-xs w-full"
+              >
+                {SHIFTS_LIST.map((item) => (
+                  <option key={item} value={item}>
+                    {item}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-end gap-2 pt-1.5 border-t border-slate-200/50">
+            <button
+              type="button"
+              onClick={handleCancel}
+              className="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <RotateCcw className="w-3.5 h-3.5" />
+              <span>Cancel</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              className="px-3.5 py-1.5 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+            >
+              <Save className="w-3.5 h-3.5" />
+              <span>Save Changes</span>
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

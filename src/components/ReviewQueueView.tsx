@@ -9,15 +9,16 @@ import {
   Clock,
   MapPin,
   Check,
-  X
+  X,
+  Sparkles
 } from 'lucide-react';
 
 export const ReviewQueueView: React.FC = () => {
-  const { uploads, reviewUpload, currentUser, canReview } = useSignedInApp();
+  const { uploads, reviewUpload, approveFinalCreative, currentUser, canReview, canApproveCreative } = useSignedInApp();
 
   const [reshootModalItem, setReshootModalItem] = useState<UploadItem | null>(null);
   const [reshootNote, setReshootNote] = useState<string>('');
-  const [filterMode, setFilterMode] = useState<'pending' | 'all'>('pending');
+  const [filterMode, setFilterMode] = useState<'pending' | 'all' | 'creative'>('pending');
   const [notification, setNotification] = useState<string | null>(null);
 
   const isSiteRestricted = currentUser.Role === 'Site Manager';
@@ -26,18 +27,21 @@ export const ReviewQueueView: React.FC = () => {
     if (filterMode === 'pending') {
       return u.reviewStatus === 'Pending';
     }
+    if (filterMode === 'creative') {
+      return Boolean(u.isCreativeWork);
+    }
     return true;
   });
 
   const handleDecision = async (id: string, status: ReviewStatus, note?: string) => {
     await reviewUpload(id, status, note);
-    setNotification(
-      `Marked ${id} as ${status}.${
-        status === 'Reshoot' || status === 'Top pick'
-          ? ' Saved in this browser. ClickUp was not updated.'
-          : ''
-      }`
-    );
+    setNotification(`Marked ${id} as ${status} (saved to server).`);
+    setTimeout(() => setNotification(null), 3500);
+  };
+
+  const handleFinalApproval = (id: string) => {
+    approveFinalCreative(id);
+    setNotification(`Granted Director Final Creative Approval for ${id} (saved to server).`);
     setTimeout(() => setNotification(null), 3500);
   };
 
@@ -62,7 +66,7 @@ export const ReviewQueueView: React.FC = () => {
         <AlertCircle className="w-8 h-8 text-amber-500 mx-auto mb-2" />
         <h3 className="font-bold text-slate-900 text-sm">Reviewer Access Required</h3>
         <p className="text-slate-400 mt-1">
-          Review is available to Engagement Leads, Site Managers, Creative Designers, and the admin. Your Google account decides the role.
+          Review is available to Directors, Site Managers, Creative Designers, and Technical Admins.
         </p>
       </div>
     );
@@ -71,7 +75,7 @@ export const ReviewQueueView: React.FC = () => {
   return (
     <div className="space-y-4 pb-28 md:pb-12 max-w-4xl mx-auto">
       {/* Header Bar */}
-      <div className="glass-card rounded-3xl p-4 sm:p-5 border border-white/70 shadow-xs flex items-center justify-between">
+      <div className="glass-card rounded-3xl p-4 sm:p-5 border border-white/70 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
             Review Queue
@@ -82,7 +86,7 @@ export const ReviewQueueView: React.FC = () => {
         </div>
 
         {/* Filter Toggle */}
-        <div className="flex bg-slate-100/70 p-1 rounded-xl text-xs font-medium">
+        <div className="flex bg-slate-100/80 p-1 rounded-xl text-xs font-medium self-start sm:self-auto border border-slate-200/50">
           <button
             onClick={() => setFilterMode('pending')}
             className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
@@ -94,6 +98,17 @@ export const ReviewQueueView: React.FC = () => {
             Pending ({uploads.filter((u) => u.reviewStatus === 'Pending').length})
           </button>
           <button
+            onClick={() => setFilterMode('creative')}
+            className={`px-3 py-1.5 rounded-lg transition cursor-pointer flex items-center gap-1 ${
+              filterMode === 'creative'
+                ? 'bg-white text-indigo-600 shadow-xs font-semibold'
+                : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <Sparkles className="w-3 h-3 text-indigo-500" />
+            <span>Creative ({uploads.filter((u) => u.isCreativeWork).length})</span>
+          </button>
+          <button
             onClick={() => setFilterMode('all')}
             className={`px-3 py-1.5 rounded-lg transition cursor-pointer ${
               filterMode === 'all'
@@ -101,7 +116,7 @@ export const ReviewQueueView: React.FC = () => {
                 : 'text-slate-500 hover:text-slate-900'
             }`}
           >
-            All
+            All ({uploads.length})
           </button>
         </div>
       </div>
@@ -152,9 +167,23 @@ export const ReviewQueueView: React.FC = () => {
                     <span>{item.site} · {item.shift} Shift</span>
                   </div>
 
-                  <h4 className="text-sm font-bold text-slate-900 mb-1">
-                    {item.topic} <span className="font-normal text-slate-400">· {item.spot}</span>
-                  </h4>
+                  <div className="flex items-center gap-2 flex-wrap mb-1">
+                    <h4 className="text-sm font-bold text-slate-900">
+                      {item.topic} <span className="font-normal text-slate-400">· {item.spot}</span>
+                    </h4>
+                    {item.isCreativeWork && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200 flex items-center gap-1">
+                        <Sparkles className="w-2.5 h-2.5" />
+                        Creative Work
+                      </span>
+                    )}
+                    {item.usedInFinal && (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
+                        <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" />
+                        Director Approved
+                      </span>
+                    )}
+                  </div>
 
                   <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed">
                     {item.note || 'No note recorded'}
@@ -167,6 +196,22 @@ export const ReviewQueueView: React.FC = () => {
 
                 {/* Decision Actions Bar */}
                 <div className="mt-4 pt-3 border-t border-slate-100/60 flex flex-wrap items-center justify-end gap-2">
+                  {canApproveCreative && (
+                    <button
+                      type="button"
+                      onClick={() => handleFinalApproval(item.id)}
+                      className={`flex items-center gap-1 text-xs font-semibold px-3 py-1.5 rounded-xl transition cursor-pointer ${
+                        item.usedInFinal
+                          ? 'bg-emerald-50 text-emerald-800 border border-emerald-300'
+                          : 'bg-white hover:bg-emerald-50 text-indigo-700 border border-indigo-200'
+                      }`}
+                      title="Director final approval for publishing"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                      <span>{item.usedInFinal ? 'Final Approved ✓' : 'Director Sign-off'}</span>
+                    </button>
+                  )}
+
                   <button
                     onClick={() => handleDecision(item.id, 'Accepted')}
                     className="flex items-center gap-1 bg-white hover:bg-slate-50 text-emerald-700 border border-emerald-200 text-xs font-semibold px-3 py-1.5 rounded-xl transition cursor-pointer"
@@ -212,7 +257,7 @@ export const ReviewQueueView: React.FC = () => {
             </div>
 
             <p className="text-xs text-slate-500">
-              Provide feedback for officer <strong>{reshootModalItem.officerName || reshootModalItem.officer}</strong>. This creates an assigned task in ClickUp.
+              Provide feedback for officer <strong>{reshootModalItem.officerName || reshootModalItem.officer}</strong>. This feedback alerts the officer directly on their daily dashboard and saves to the server.
             </p>
 
             <textarea

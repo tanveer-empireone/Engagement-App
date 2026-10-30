@@ -1,12 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useSignedInApp } from '../context/AppContext';
+import { SHIFTS_LIST } from '../utils/idGenerator';
 import {
   Upload,
   Star,
   X,
   CheckCircle2,
   Camera,
-  ChevronDown
+  ChevronDown,
+  Sparkles
 } from 'lucide-react';
 
 interface StagedFile {
@@ -29,9 +31,10 @@ const QUICK_TOPICS = [
 export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onNavigateToLibrary }) => {
   const { currentUser, sites, topics, addBatchUploads, getTopPickRoom } = useSignedInApp();
 
-  // Smart defaults: already knows user's site & shift!
+  // Smart defaults with rotating shift support!
   const [site] = useState<string>(currentUser.Site || sites[0].SiteName);
-  const [shift] = useState<string>(currentUser.Shift || 'Peak');
+  const [shift, setShift] = useState<string>(currentUser.Shift || 'Peak');
+  const [isCreativeSubmission, setIsCreativeSubmission] = useState<boolean>(currentUser.Role === 'Creative Designer');
   const [topic, setTopic] = useState<string>(QUICK_TOPICS[0].value);
   const [note, setNote] = useState<string>('');
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
@@ -107,7 +110,8 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           note: note || `${topic} capture`,
           consentSigned: true,
           nothingConfidential: true,
-          topPick: f.top
+          topPick: f.top,
+          isCreativeWork: isCreativeSubmission
         }))
       );
 
@@ -122,15 +126,26 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
 
   return (
     <div className="space-y-4 pb-28 md:pb-12 max-w-xl mx-auto">
-      {/* 1. Header: Zero cognitive load */}
+      {/* 1. Header with Rotating Shift Selector */}
       <div className="px-1 flex items-center justify-between">
         <div>
           <h2 className="text-xl font-bold tracking-tight text-slate-900">
             Snap &amp; Upload
           </h2>
-          <p className="text-xs text-slate-500">
-            {site} · {shift} Shift
-          </p>
+          <div className="flex items-center gap-1.5 mt-0.5">
+            <span className="text-xs text-slate-500 font-medium">{site} · </span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Shift:</span>
+            <select
+              value={shift}
+              onChange={(e) => setShift(e.target.value)}
+              aria-label="Working shift for upload"
+              className="text-xs font-semibold text-indigo-700 bg-indigo-50 border border-indigo-200/80 rounded-lg px-2 py-0.5 cursor-pointer hover:bg-indigo-100 transition-colors"
+            >
+              {SHIFTS_LIST.map((s) => (
+                <option key={s} value={s}>{s}</option>
+              ))}
+            </select>
+          </div>
         </div>
 
         {/* Top Pick Allowance Pill */}
@@ -139,6 +154,30 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           <span className="text-slate-400 text-[11px] block">stars left</span>
         </div>
       </div>
+
+      {/* Creative Staff Mode Banner */}
+      {currentUser.Role === 'Creative Designer' && (
+        <div className="p-3.5 rounded-2xl bg-indigo-50/80 border border-indigo-200/70 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2.5">
+            <span className="p-2 rounded-xl bg-indigo-600 text-white shadow-xs">
+              <Sparkles className="w-4 h-4" />
+            </span>
+            <div>
+              <h4 className="text-xs font-bold text-slate-900">Completed Creative Work</h4>
+              <p className="text-[11px] text-slate-500">Submits finished designs/edits for Director review &amp; sign-off.</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => setIsCreativeSubmission(!isCreativeSubmission)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-semibold cursor-pointer transition-colors ${
+              isCreativeSubmission ? 'bg-indigo-600 text-white shadow-xs' : 'bg-white border border-slate-200 text-slate-600'
+            }`}
+          >
+            {isCreativeSubmission ? 'Active' : 'Regular'}
+          </button>
+        </div>
+      )}
 
       {/* 2. Photo Drop / Camera Hero Zone (Instant System 1 recognition) */}
       <input
