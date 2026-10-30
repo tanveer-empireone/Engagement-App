@@ -90,7 +90,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
           {!isCollapsed ? (
             <div>
               <div className="flex items-center justify-between pt-1 pb-3 px-1">
-                <div className="flex items-center gap-2.5 min-w-0">
+                <div className="flex items-center gap-2.5 min-w-0 flex-1">
                   <button
                     onClick={() => setActiveTab('today')}
                     className="w-9 h-9 rounded-2xl bg-white border border-indigo-100 shadow-md shadow-indigo-500/15 flex items-center justify-center p-1 cursor-pointer hover:scale-105 transition shrink-0"
@@ -102,8 +102,8 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
                       className="w-full h-full object-contain"
                     />
                   </button>
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none">
+                  <div className="flex flex-col min-w-0 flex-1">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-none truncate">
                       EmpireOne CX
                     </span>
                     <span
