@@ -167,13 +167,21 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
           }
         }}
       >
-        <div>
-          <h3 className="text-sm font-bold text-slate-900">Add team member</h3>
-          <p className="text-[11px] text-slate-500">
-            {isTechnicalAdmin
-              ? 'Assign an operational role or Technical Admin. tanveer@empireonecx.com stays Root Admin.'
-              : 'Add Engagement Officers, Site Managers, Creative Designers, or Directors.'}
-          </p>
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-bold text-slate-900">Add team member</h3>
+            <p className="text-[11px] text-slate-500">
+              {isTechnicalAdmin
+                ? 'Assign an operational role or Technical Admin. tanveer@empireonecx.com stays Root Admin.'
+                : 'Add Engagement Officers, Site Managers, Creative Designers, or Directors.'}
+            </p>
+          </div>
+          <span className={`shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[10px] font-semibold border ${
+            googleToken ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-slate-100 border-slate-200 text-slate-600'
+          }`}>
+            <span className={`w-1.5 h-1.5 rounded-full ${googleToken ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+            {googleToken ? 'Sheet Sync: Live' : 'Sheet: Sign-in needed to write'}
+          </span>
         </div>
         <div className="grid sm:grid-cols-2 gap-2">
           <input
@@ -229,12 +237,23 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
             ))}
           </select>
         </div>
-        <button
-          type="submit"
-          className="px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer shadow-xs transition-colors"
-        >
-          Add user
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="submit"
+            className="px-3.5 py-2 rounded-xl text-xs font-semibold text-white bg-indigo-600 hover:bg-indigo-700 cursor-pointer shadow-xs transition-colors"
+          >
+            Add user & sync
+          </button>
+          {!googleToken && (
+            <button
+              type="button"
+              onClick={() => signInWithGoogle()}
+              className="text-[11px] font-medium text-indigo-600 hover:underline cursor-pointer"
+            >
+              Connect Google to save to Sheet
+            </button>
+          )}
+        </div>
       </form>
 
       <div className="space-y-2.5">

@@ -17,7 +17,7 @@ export const auth = getAuth(app);
 // holds back the first auth callback and leaves the gate on a spinner.
 
 export const SCOPES = [
-  'https://www.googleapis.com/auth/spreadsheets.readonly',
+  'https://www.googleapis.com/auth/spreadsheets',
   'https://www.googleapis.com/auth/drive.readonly'
 ];
 

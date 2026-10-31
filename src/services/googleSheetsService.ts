@@ -1,6 +1,6 @@
 /**
- * Google Sheets Live Read Service
- * STRICTLY READ-ONLY: All API requests use HTTP GET. No write, update, append, or delete operations.
+ * Google Sheets Live Service
+ * Read, append, and update operations for Google Sheets API v4.
  */
 
 import {
@@ -573,5 +573,264 @@ export async function fetchAllLiveSheetData(
     syncLogs: parsedLogs,
     rawRowsCount,
     fetchedAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Discover the tab name for people / roster in the Google Sheet
+ */
+export async function findRosterTab(
+  accessToken: string,
+  spreadsheetId: string = TARGET_SPREADSHEET_ID
+): Promise<string> {
+  try {
+    const meta = await fetchSpreadsheetMetadata(accessToken, spreadsheetId);
+    for (const tab of meta.tabs) {
+      const titleLower = tab.title.toLowerCase();
+      if (
+        titleLower.includes('roster') ||
+        titleLower.includes('people') ||
+        titleLower.includes('user') ||
+        titleLower.includes('team') ||
+        titleLower.includes('staff') ||
+        titleLower.includes('member') ||
+        titleLower.includes('directory')
+      ) {
+        return tab.title;
+      }
+    }
+    if (meta.tabs.length > 0) return meta.tabs[0].title;
+  } catch (err) {
+    console.warn('Could not discover tabs dynamically for roster, defaulting to Roster:', err);
+  }
+  return 'Roster';
+}
+
+/**
+ * Append a newly created user row directly to Google Sheets (Columns A-F: Email, Name, Role, Site, Shift, Active)
+ */
+export async function appendUserToSheet(
+  accessToken: string,
+  user: {
+    Email: string;
+    Name: string;
+    Role: string;
+    Site: string;
+    Shift?: string;
+    Active?: boolean;
+  },
+  spreadsheetId: string = TARGET_SPREADSHEET_ID,
+  targetTab?: string
+): Promise<{ success: boolean; message: string; tab?: string }> {
+  if (!accessToken) {
+    return { success: false, message: 'Google access token is missing' };
+  }
+  if (!user.Email || !user.Email.includes('@')) {
+    return { success: false, message: 'Valid email required' };
+  }
+
+  const tab = targetTab || (await findRosterTab(accessToken, spreadsheetId));
+  const range = `${tab}!A:F`;
+  const rowValues = [
+    user.Email.trim(),
+    (user.Name && user.Name.trim()) || user.Email.split('@')[0],
+    user.Role || 'Officer',
+    user.Site || 'Cebu City',
+    user.Shift || 'Peak',
+    user.Active !== false ? 'TRUE' : 'FALSE'
+  ];
+
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    range
+  )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+
+  let res: Response | null = null;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        range,
+        majorDimension: 'ROWS',
+        values: [rowValues]
+      })
+    });
+  } catch (directErr) {
+    console.warn('Direct append to Google Sheets failed, trying server proxy...', directErr);
+  }
+
+  // Fallback to server proxy
+  if (!res || !res.ok) {
+    try {
+      const proxyRes = await fetch('/api/sheets/append', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: accessToken,
+          spreadsheetId,
+          range,
+          values: [rowValues]
+        })
+      });
+      if (proxyRes.ok) {
+        res = proxyRes;
+      }
+    } catch (proxyErr) {
+      console.warn('Server proxy append failed:', proxyErr);
+    }
+  }
+
+  if (!res || !res.ok) {
+    const errorText = res ? await res.text() : 'Network error or blocked request';
+    let detail = errorText;
+    try {
+      const parsed = JSON.parse(errorText);
+      detail = parsed.error?.message || errorText;
+    } catch {}
+    return {
+      success: false,
+      message: `Google Sheets write error (${res?.status ?? 'Network'}): ${detail}`,
+      tab
+    };
+  }
+
+  return {
+    success: true,
+    message: `Added ${user.Email} to Google Sheet tab “${tab}”`,
+    tab
+  };
+}
+
+/**
+ * Update an existing user in Google Sheets by matching Email in column A
+ */
+export async function updateUserInSheet(
+  accessToken: string,
+  user: {
+    Email: string;
+    Name?: string;
+    Role?: string;
+    Site?: string;
+    Shift?: string;
+    Active?: boolean;
+  },
+  spreadsheetId: string = TARGET_SPREADSHEET_ID,
+  targetTab?: string
+): Promise<{ success: boolean; message: string; rowNumber?: number }> {
+  if (!accessToken) {
+    return { success: false, message: 'Google access token is missing' };
+  }
+  const emailKey = user.Email.trim().toLowerCase();
+  const tab = targetTab || (await findRosterTab(accessToken, spreadsheetId));
+
+  // 1. Fetch column A to find row index
+  const emails = await fetchTabValues(accessToken, tab, 'A1:A500', spreadsheetId);
+  let targetRowIndex = -1;
+  for (let i = 0; i < emails.length; i++) {
+    const rowEmail = String(emails[i]?.[0] || '').trim().toLowerCase();
+    if (rowEmail === emailKey) {
+      targetRowIndex = i + 1; // 1-based row index in Sheets
+      break;
+    }
+  }
+
+  // If user row is not found in the sheet, append them instead!
+  if (targetRowIndex === -1) {
+    const appendRes = await appendUserToSheet(
+      accessToken,
+      {
+        Email: user.Email,
+        Name: user.Name || user.Email.split('@')[0],
+        Role: user.Role || 'Officer',
+        Site: user.Site || 'Cebu City',
+        Shift: user.Shift || 'Peak',
+        Active: user.Active
+      },
+      spreadsheetId,
+      tab
+    );
+    return {
+      success: appendRes.success,
+      message: appendRes.message
+    };
+  }
+
+  // 2. Fetch existing row values to merge
+  const existingRowValues = await fetchTabValues(
+    accessToken,
+    tab,
+    `A${targetRowIndex}:F${targetRowIndex}`,
+    spreadsheetId
+  );
+  const cur = existingRowValues[0] || [];
+  const updatedRow = [
+    user.Email,
+    user.Name !== undefined ? user.Name : cur[1] || '',
+    user.Role !== undefined ? user.Role : cur[2] || 'Officer',
+    user.Site !== undefined ? user.Site : cur[3] || 'Cebu City',
+    user.Shift !== undefined ? user.Shift : cur[4] || 'Peak',
+    user.Active !== undefined ? (user.Active ? 'TRUE' : 'FALSE') : cur[5] || 'TRUE'
+  ];
+
+  const updateRange = `${tab}!A${targetRowIndex}:F${targetRowIndex}`;
+  const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+    updateRange
+  )}?valueInputOption=USER_ENTERED`;
+
+  let res: Response | null = null;
+  try {
+    res = await fetch(url, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        range: updateRange,
+        majorDimension: 'ROWS',
+        values: [updatedRow]
+      })
+    });
+  } catch (directErr) {
+    console.warn('Direct update to Google Sheets failed, trying proxy...', directErr);
+  }
+
+  if (!res || !res.ok) {
+    try {
+      const proxyRes = await fetch('/api/sheets/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          token: accessToken,
+          spreadsheetId,
+          range: updateRange,
+          values: [updatedRow]
+        })
+      });
+      if (proxyRes.ok) {
+        res = proxyRes;
+      }
+    } catch (proxyErr) {
+      console.warn('Server proxy update failed:', proxyErr);
+    }
+  }
+
+  if (!res || !res.ok) {
+    const errorText = res ? await res.text() : 'Network error or blocked request';
+    return {
+      success: false,
+      message: `Google Sheets update error (${res?.status ?? 'Network'}): ${errorText}`
+    };
+  }
+
+  return {
+    success: true,
+    message: `Updated ${user.Email} in Google Sheet tab “${tab}” (Row ${targetRowIndex})`,
+    rowNumber: targetRowIndex
   };
 }

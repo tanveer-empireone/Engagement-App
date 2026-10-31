@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
-const DATA_DIR = path.resolve(__dirname, 'data');
+const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
 
 const ADMIN_EMAIL = 'tanveer@empireonecx.com';
@@ -213,7 +213,7 @@ function writeStore(store: ServerStore): void {
   fs.renameSync(tempPath, DATA_FILE);
 }
 
-async function startServer() {
+export function createExpressApp(): express.Express {
   const app = express();
 
   app.use(express.json({ limit: '50mb' }));
@@ -400,6 +400,76 @@ async function startServer() {
           Authorization: `Bearer ${token}`,
           Accept: 'application/json'
         }
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Proxy Google Sheets append row
+  app.post('/api/sheets/append', async (req, res) => {
+    const { token, spreadsheetId, range, values } = req.body || {};
+    if (!token || !spreadsheetId || !range || !Array.isArray(values)) {
+      res.status(400).json({ error: 'Token, spreadsheetId, range, and values array required' });
+      return;
+    }
+
+    try {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        range
+      )}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`;
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({
+          range,
+          majorDimension: 'ROWS',
+          values
+        })
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Proxy Google Sheets update row
+  app.post('/api/sheets/update', async (req, res) => {
+    const { token, spreadsheetId, range, values } = req.body || {};
+    if (!token || !spreadsheetId || !range || !Array.isArray(values)) {
+      res.status(400).json({ error: 'Token, spreadsheetId, range, and values array required' });
+      return;
+    }
+
+    try {
+      const url = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
+        range
+      )}?valueInputOption=USER_ENTERED`;
+      const response = await fetch(url, {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        },
+        body: JSON.stringify({
+          range,
+          majorDimension: 'ROWS',
+          values
+        })
       });
       const data = await response.text();
       res.status(response.status);
@@ -771,6 +841,12 @@ async function startServer() {
     res.json({ ok: true, store: INITIAL_STORE, message: 'Server reset to initial state.' });
   });
 
+  return app;
+}
+
+export async function startServer() {
+  const app = createExpressApp();
+
   // Mount Vite or serve static files
   if (process.env.NODE_ENV === 'production') {
     app.use(express.static(path.resolve(__dirname, 'dist')));
@@ -788,9 +864,13 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`E1 Server listening on port ${PORT}`);
   });
+  return app;
 }
 
-startServer().catch((err) => {
-  console.error('Failed to start server:', err);
-  process.exit(1);
-});
+const isDirectRun = Boolean(process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]));
+if (!process.env.VERCEL && isDirectRun) {
+  startServer().catch((err) => {
+    console.error('Failed to start server:', err);
+    process.exit(1);
+  });
+}

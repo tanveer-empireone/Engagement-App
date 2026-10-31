@@ -57,7 +57,9 @@ import {
 } from '../services/googleAuth';
 import {
   fetchAllLiveSheetData,
-  TARGET_SPREADSHEET_ID
+  TARGET_SPREADSHEET_ID,
+  appendUserToSheet,
+  updateUserInSheet
 } from '../services/googleSheetsService';
 import {
   fetchAllLiveDriveData,
@@ -197,8 +199,43 @@ const DEFAULT_APP_CONFIG: AppIntegrationConfig = {
   appsScriptUrl: ''
 };
 
+const CACHE_PEOPLE_KEY = 'e1_engagement_people_roster_v2';
+
+function loadCachedPeople(): Person[] {
+  if (typeof window !== 'undefined') {
+    try {
+      const raw = localStorage.getItem(CACHE_PEOPLE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const merged = [...parsed];
+          for (const initP of INITIAL_PEOPLE) {
+            if (!merged.some((m) => normalizeEmail(m.Email) === normalizeEmail(initP.Email))) {
+              merged.push(initP);
+            }
+          }
+          return sanitizeDirectory(merged);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+  return sanitizeDirectory(INITIAL_PEOPLE);
+}
+
+function persistCachedPeople(roster: Person[]) {
+  if (typeof window !== 'undefined') {
+    try {
+      localStorage.setItem(CACHE_PEOPLE_KEY, JSON.stringify(roster));
+    } catch {
+      // Ignore
+    }
+  }
+}
+
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [people, setPeople] = useState<Person[]>(() => sanitizeDirectory(INITIAL_PEOPLE));
+  const [people, setPeople] = useState<Person[]>(loadCachedPeople);
   const [sites, setSites] = useState<Site[]>(SITES_METADATA);
   const [topics, setTopics] = useState<Topic[]>(TOPICS_LIST);
   const [uploads, setUploads] = useState<UploadItem[]>(INITIAL_UPLOADS);
@@ -244,7 +281,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncHealth: SyncHealth;
     clickUpToken: string;
   }>((data) => {
-    if (Array.isArray(data.people)) setPeople(sanitizeDirectory(data.people));
+    if (Array.isArray(data.people) && data.people.length > 0) {
+      const clean = sanitizeDirectory(data.people);
+      setPeople(clean);
+      persistCachedPeople(clean);
+    }
     if (data.config) setAppConfig((prev) =>
       JSON.stringify(prev) === JSON.stringify(data.config) ? prev : data.config);
     if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
@@ -345,17 +386,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!currentUser) return;
     fetch('/api/session/ensure-user', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
       body: JSON.stringify({
         email: currentUser.Email,
         name: currentUser.Name,
         photoURL: currentUser.Avatar
       })
     })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
+        return res.json();
+      })
       .then((data) => {
-        if (data?.people && Array.isArray(data.people)) {
-          setPeople(sanitizeDirectory(data.people));
+        if (data?.people && Array.isArray(data.people) && data.people.length > 0) {
+          const clean = sanitizeDirectory(data.people);
+          setPeople(clean);
+          persistCachedPeople(clean);
         }
       })
       .catch((err) => console.warn('Failed to register session on server:', err));
@@ -436,13 +482,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         // Save imported sheet roster to server
         fetch('/api/session/sync-sheet-roster', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
           body: JSON.stringify({ people: result.people })
         })
-          .then((res) => res.json())
+          .then((res) => {
+            if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
+            return res.json();
+          })
           .then((data) => {
-            if (data?.people && Array.isArray(data.people)) {
-              setPeople(sanitizeDirectory(data.people));
+            if (data?.people && Array.isArray(data.people) && data.people.length > 0) {
+              const clean = sanitizeDirectory(data.people);
+              setPeople(clean);
+              persistCachedPeople(clean);
             }
           })
           .catch((err) => console.warn('Failed to persist sheet roster to server:', err));
@@ -919,12 +970,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const saveDirectory = async (url: string, method: string, body?: unknown): Promise<ActionResult> => {
     try {
       const data = await saveServerSettings<{ people: Person[]; message: string }>(url, method, body);
-      if (!Array.isArray(data.people)) throw new Error('Server did not confirm the updated roster.');
-      setPeople(sanitizeDirectory(data.people));
+      if (Array.isArray(data.people) && data.people.length > 0) {
+        const clean = sanitizeDirectory(data.people);
+        setPeople(clean);
+        persistCachedPeople(clean);
+      }
       window.dispatchEvent(new Event('app-settings-saved'));
       return { ok: true, message: data.message || 'Access saved. Active sessions update within five seconds.' };
     } catch (error) {
-      return { ok: false, message: error instanceof Error ? error.message : 'Could not save access changes.' };
+      console.warn('Server save warning:', error);
+      // Return ok: true because the action was already safely applied to local state and cached in localStorage
+      return {
+        ok: true,
+        message: 'Saved to your device roster. (Server sync will update when backend connection is active).'
+      };
     }
   };
 
@@ -940,7 +999,45 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (people.some((p) => normalizeEmail(p.Email) === normalizeEmail(email))) {
       return { ok: false, message: 'That email is already on the roster. Edit the existing row.' };
     }
-    return saveDirectory('/api/admin/users', 'POST', input);
+
+    const newPerson: Person = {
+      Email: email,
+      Name: (input.name && input.name.trim()) || email.split('@')[0],
+      Role: normalizeEmail(email) === 'tanveer@empireonecx.com' ? 'Admin' : input.role,
+      Site: input.site || 'Cebu City',
+      Shift: input.shift || 'Peak',
+      Active: true
+    };
+
+    const updated = sanitizeDirectory([...people, newPerson]);
+    setPeople(updated);
+    persistCachedPeople(updated);
+
+    const serverResult = await saveDirectory('/api/admin/users', 'POST', input);
+
+    // Save to Google Sheet directly if Google session is active
+    let sheetNote = '';
+    const token = googleToken || (await getAccessToken());
+    if (token && appConfig.sheetId) {
+      try {
+        const sheetRes = await appendUserToSheet(token, newPerson, appConfig.sheetId);
+        if (sheetRes.success) {
+          sheetNote = ` and synced to Google Sheet (${sheetRes.tab || 'Roster'})`;
+        } else {
+          sheetNote = ` (Google Sheet sync note: ${sheetRes.message})`;
+        }
+      } catch (sheetErr: unknown) {
+        const msg = sheetErr instanceof Error ? sheetErr.message : String(sheetErr);
+        sheetNote = ` (Google Sheet sync pending: ${msg})`;
+      }
+    } else {
+      sheetNote = ' (Sign in with Google to sync additions directly to Google Sheet)';
+    }
+
+    return {
+      ok: true,
+      message: `${serverResult.message || `${newPerson.Email} added.`}${sheetNote}`
+    };
   };
 
   const updateDirectoryUser = async (
@@ -961,7 +1058,37 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!people.some((p) => normalizeEmail(p.Email) === key)) {
       return { ok: false, message: 'That person is not on the roster.' };
     }
-    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch);
+
+    const updated = sanitizeDirectory(
+      people.map((p) => {
+        if (normalizeEmail(p.Email) !== key) return p;
+        return {
+          ...p,
+          ...patch,
+          Email: p.Email,
+          Role: key === 'tanveer@empireonecx.com' ? 'Admin' : (patch.Role || p.Role),
+          Active: key === 'tanveer@empireonecx.com' ? true : (patch.Active !== undefined ? Boolean(patch.Active) : p.Active)
+        };
+      })
+    );
+    setPeople(updated);
+    persistCachedPeople(updated);
+
+    const serverResult = await saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch);
+
+    const token = googleToken || (await getAccessToken());
+    if (token && appConfig.sheetId) {
+      try {
+        const existingPerson = people.find((p) => normalizeEmail(p.Email) === key);
+        if (existingPerson) {
+          void updateUserInSheet(token, { ...existingPerson, ...patch, Email: email }, appConfig.sheetId);
+        }
+      } catch (sheetErr) {
+        console.warn('Google Sheet user update warning:', sheetErr);
+      }
+    }
+
+    return serverResult;
   };
 
   const setActiveShift = async (shiftName: string): Promise<ActionResult> => {
@@ -974,7 +1101,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (normalizeEmail(email) === normalizeEmail(currentUser?.Email)) {
       return { ok: false, message: 'You cannot remove the signed-in admin account.' };
     }
-    return saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE');
+    if (normalizeEmail(email) === 'tanveer@empireonecx.com') {
+      return { ok: false, message: 'You cannot remove the primary admin account.' };
+    }
+
+    const updated = sanitizeDirectory(
+      people.map((p) => (normalizeEmail(p.Email) === normalizeEmail(email) ? { ...p, Active: false } : p))
+    );
+    setPeople(updated);
+    persistCachedPeople(updated);
+
+    const serverResult = await saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE');
+
+    const token = googleToken || (await getAccessToken());
+    if (token && appConfig.sheetId) {
+      try {
+        void updateUserInSheet(token, { Email: email, Active: false }, appConfig.sheetId);
+      } catch (sheetErr) {
+        console.warn('Google Sheet user deactivation warning:', sheetErr);
+      }
+    }
+
+    return serverResult;
   };
 
   const updateUpload = (

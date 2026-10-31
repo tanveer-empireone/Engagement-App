@@ -18,6 +18,10 @@ export function subscribeServerState<T>(
     try {
       const response = await fetch('/api/state', { cache: 'no-store', signal: request.signal });
       if (!response.ok) throw new Error(`Could not refresh settings (HTTP ${response.status}).`);
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('Server returned non-JSON response.');
+      }
       const state = await response.json();
       if (stopped || request.signal.aborted) return;
       apply(state, initial);
@@ -48,12 +52,33 @@ export function subscribeServerState<T>(
 export async function saveServerSettings<T>(url: string, method: string, body?: unknown): Promise<T> {
   const response = await fetch(url, {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) })
   });
-  const data = await response.json();
+
+  const contentType = response.headers.get('content-type') || '';
+  let data: any = null;
+  if (contentType.includes('application/json')) {
+    try {
+      data = await response.json();
+    } catch {
+      data = null;
+    }
+  }
+
+  if (data === null) {
+    const text = await response.text().catch(() => '');
+    if (!response.ok) {
+      if (text.includes('The page c') || text.includes('not found') || response.status === 404) {
+        throw new Error(`Server endpoint is temporarily unavailable (HTTP ${response.status}).`);
+      }
+      throw new Error(`Save failed (HTTP ${response.status})${text ? `: ${text.slice(0, 100)}` : ''}`);
+    }
+    throw new Error('Server returned an unexpected non-JSON response.');
+  }
+
   if (!response.ok || data.ok === false) {
     throw new Error(data.message || `Save failed (HTTP ${response.status}).`);
   }
-  return data;
+  return data as T;
 }
