@@ -14,6 +14,7 @@ import {
   LogOut,
   Settings,
   ClipboardList,
+  HardDrive,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -409,6 +410,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             avatar={currentUser.Avatar}
             onToggle={() => setMenuOpen((open) => !open)}
             onAdmin={openAdmin}
+            onAdminDrive={() => setActiveTab('library')}
             onSignOut={signOut}
           />
         </div>
@@ -453,6 +455,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               avatar={currentUser.Avatar}
               onToggle={() => setMenuOpen((open) => !open)}
               onAdmin={openAdmin}
+              onAdminDrive={() => setActiveTab('library')}
               onSignOut={signOut}
             />
           </div>
@@ -553,8 +556,9 @@ const ProfileMenu: React.FC<{
   avatar?: string;
   onToggle: () => void;
   onAdmin: () => void;
+  onAdminDrive?: () => void;
   onSignOut: () => void;
-}> = ({ open, collapsed, compact, isAdmin, name, role, site, avatar, onToggle, onAdmin, onSignOut }) => {
+}> = ({ open, collapsed, compact, isAdmin, name, role, site, avatar, onToggle, onAdmin, onAdminDrive, onSignOut }) => {
   const letter = (name || '?').slice(0, 1).toUpperCase();
   const portrait = avatar ? (
     <img src={avatar} alt={name} className="w-full h-full rounded-full object-cover" />
@@ -612,16 +616,30 @@ const ProfileMenu: React.FC<{
           }`}
         >
           {isAdmin && (
-            <button
-              type="button"
-              role="menuitem"
-              data-testid="open-admin-panel"
-              onClick={onAdmin}
-              className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-indigo-50 cursor-pointer"
-            >
-              <Settings className="w-3.5 h-3.5" />
-              Admin panel
-            </button>
+            <>
+              <button
+                type="button"
+                role="menuitem"
+                data-testid="open-admin-panel"
+                onClick={onAdmin}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-indigo-50 cursor-pointer"
+              >
+                <Settings className="w-3.5 h-3.5" />
+                Admin panel
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onToggle();
+                  onAdminDrive?.();
+                }}
+                className="w-full flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-semibold text-slate-700 hover:bg-indigo-50 cursor-pointer"
+              >
+                <HardDrive className="w-3.5 h-3.5 text-indigo-600" />
+                Media Library
+              </button>
+            </>
           )}
           <button
             type="button"

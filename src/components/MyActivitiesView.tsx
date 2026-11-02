@@ -336,11 +336,25 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                       : 'bg-white/80 border-slate-200/70'
                   }`}
                 >
-                  <img
-                    src={item.mediaUrl}
-                    alt={item.topic}
-                    className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-200"
-                  />
+                  {item.mediaUrl ? (
+                    <img
+                      src={item.mediaUrl}
+                      alt={item.topic}
+                      onError={(e) => {
+                        (e.target as HTMLElement).style.display = 'none';
+                        const fb = (e.target as HTMLElement).nextElementSibling;
+                        if (fb) (fb as HTMLElement).style.display = 'flex';
+                      }}
+                      className="w-14 h-14 rounded-xl object-cover shrink-0 border border-slate-200"
+                    />
+                  ) : null}
+                  <div
+                    className={`w-14 h-14 rounded-xl bg-slate-900 text-white/80 shrink-0 border border-slate-200 items-center justify-center ${
+                      item.mediaUrl ? 'hidden' : 'flex'
+                    }`}
+                  >
+                    <Camera className="w-5 h-5 text-indigo-400" />
+                  </div>
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center justify-between gap-1 mb-0.5">
                       <span className="text-xs font-bold text-slate-900 truncate">{item.topic}</span>

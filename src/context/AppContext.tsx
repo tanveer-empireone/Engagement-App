@@ -15,7 +15,8 @@ import {
   Role,
   AppIntegrationConfig,
   ConnectorReport,
-  UserActivity
+  UserActivity,
+  DrivePermissionGrant
 } from '../types';
 import {
   INITIAL_PEOPLE,
@@ -242,6 +243,18 @@ interface AppContextType {
   toggleSyncPause: () => void;
   getTopPickRoom: (site: string, shift: string, mode: string, eventName?: string, dateStr?: string) => { used: number; limit: number; left: number };
   resetToSampleData: () => void;
+
+  drivePermissions: DrivePermissionGrant[];
+  grantDrivePermission: (grant: {
+    targetType: 'all' | 'folder' | 'file';
+    targetId: string;
+    targetName: string;
+    granteeType: 'user' | 'role' | 'site';
+    granteeValue: string;
+    granteeName?: string;
+  }) => Promise<ActionResult>;
+  revokeDrivePermission: (id: string) => Promise<ActionResult>;
+  canUserAccessDriveItem: (targetType: 'all' | 'folder' | 'file', targetId: string, folderId?: string) => boolean;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -325,8 +338,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
   const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
+  const [drivePermissions, setDrivePermissions] = useState<DrivePermissionGrant[]>([]);
 
-  // Fetch initial activities on mount
+  // Fetch initial activities and drive permissions on mount
   useEffect(() => {
     fetch('/api/activities')
       .then((res) => (res.ok ? res.json() : null))
@@ -336,6 +350,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       })
       .catch((err) => console.warn('Activities initial fetch note:', err));
+
+    fetch('/api/drive/permissions')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.ok && Array.isArray(data.permissions)) {
+          setDrivePermissions(data.permissions);
+        }
+      })
+      .catch((err) => console.warn('Drive permissions initial fetch:', err));
   }, []);
 
   // The server owns access and settings; keep every mounted session up to date in real time.
@@ -349,6 +372,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showCaptureForAdmin: boolean;
     syncHealth: SyncHealth;
     clickUpToken: string;
+    drivePermissions?: DrivePermissionGrant[];
   }>((data) => {
     if (Array.isArray(data.people) && data.people.length > 0) {
       const clean = sanitizeDirectory(data.people);
@@ -359,6 +383,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       JSON.stringify(prev) === JSON.stringify(data.config) ? prev : data.config);
     if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
     if (typeof data.clickUpToken === 'string') setClickUpTokenState(data.clickUpToken);
+    if (Array.isArray(data.drivePermissions)) {
+      setDrivePermissions((prev) =>
+        JSON.stringify(prev) === JSON.stringify(data.drivePermissions) ? prev : (data.drivePermissions || [])
+      );
+    }
 
     // Keep records, directions, reports, activities, and sync health in sync with server state across all user sessions
     if (!liveSheetsMetaRef.current) {
@@ -1426,6 +1455,99 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from server.` };
   };
 
+  const grantDrivePermission = async (grant: {
+    targetType: 'all' | 'folder' | 'file';
+    targetId: string;
+    targetName: string;
+    granteeType: 'user' | 'role' | 'site';
+    granteeValue: string;
+    granteeName?: string;
+  }): Promise<ActionResult> => {
+    try {
+      const res = await fetch('/api/drive/permissions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...grant,
+          grantedBy: currentUser?.Email || 'tanveer@empireonecx.com'
+        })
+      });
+      const data = await res.json();
+      if (data?.ok && Array.isArray(data.permissions)) {
+        setDrivePermissions(data.permissions);
+        window.dispatchEvent(new Event('app-settings-saved'));
+        return { ok: true, message: data.message || 'Permission granted successfully.' };
+      }
+      return { ok: false, message: data?.message || 'Failed to grant permission.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Error granting permission: ${msg}` };
+    }
+  };
+
+  const revokeDrivePermission = async (id: string): Promise<ActionResult> => {
+    try {
+      const res = await fetch(`/api/drive/permissions/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data?.ok && Array.isArray(data.permissions)) {
+        setDrivePermissions(data.permissions);
+        window.dispatchEvent(new Event('app-settings-saved'));
+        return { ok: true, message: data.message || 'Permission revoked successfully.' };
+      }
+      return { ok: false, message: data?.message || 'Failed to revoke permission.' };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, message: `Error revoking permission: ${msg}` };
+    }
+  };
+
+  const canUserAccessDriveItem = (
+    targetType: 'all' | 'folder' | 'file',
+    targetId: string,
+    folderId?: string
+  ): boolean => {
+    if (currentUser?.Role === 'Admin') return true;
+    if (!currentUser) return false;
+
+    const userEmail = (currentUser.Email || '').trim().toLowerCase();
+    const userRole = (currentUser.Role || '').trim().toLowerCase();
+    const userSite = (currentUser.Site || '').trim().toLowerCase();
+
+    const isMatch = (p: DrivePermissionGrant) => {
+      if (p.granteeType === 'user') {
+        return (p.granteeValue || '').trim().toLowerCase() === userEmail;
+      }
+      if (p.granteeType === 'role') {
+        return (p.granteeValue || '').trim().toLowerCase() === userRole;
+      }
+      if (p.granteeType === 'site') {
+        return (p.granteeValue || '').trim().toLowerCase() === userSite;
+      }
+      return false;
+    };
+
+    // 1. Entire Drive access granted?
+    const hasAll = drivePermissions.some((p) => p.targetType === 'all' && isMatch(p));
+    if (hasAll) return true;
+    if (targetType === 'all') return false;
+
+    // 2. Specific Folder access granted?
+    if (targetType === 'folder') {
+      return drivePermissions.some((p) => p.targetType === 'folder' && p.targetId === targetId && isMatch(p));
+    }
+
+    // 3. Specific File access granted?
+    if (targetType === 'file') {
+      const isFileGranted = drivePermissions.some((p) => p.targetType === 'file' && p.targetId === targetId && isMatch(p));
+      if (isFileGranted) return true;
+      if (folderId) {
+        return drivePermissions.some((p) => p.targetType === 'folder' && p.targetId === folderId && isMatch(p));
+      }
+    }
+
+    return false;
+  };
+
   return (
     <AppContext.Provider
       value={{
@@ -1503,7 +1625,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         triggerManualSync,
         toggleSyncPause,
         getTopPickRoom,
-        resetToSampleData
+        resetToSampleData,
+        drivePermissions,
+        grantDrivePermission,
+        revokeDrivePermission,
+        canUserAccessDriveItem
       }}
     >
       {children}

@@ -10,7 +10,9 @@ import {
   MapPin,
   Check,
   X,
-  Sparkles
+  Sparkles,
+  Camera,
+  Video
 } from 'lucide-react';
 
 export const ReviewQueueView: React.FC = () => {
@@ -146,11 +148,32 @@ export const ReviewQueueView: React.FC = () => {
             >
               {/* Media Preview */}
               <div className="w-full sm:w-44 h-36 rounded-2xl overflow-hidden bg-slate-900 shrink-0 relative">
-                <img
-                  src={item.mediaUrl}
-                  alt={item.id}
-                  className="w-full h-full object-cover"
-                />
+                {item.mediaUrl ? (
+                  <img
+                    src={item.mediaUrl}
+                    alt={item.id}
+                    className="w-full h-full object-cover"
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                      const parent = (e.target as HTMLElement).parentElement;
+                      if (parent) {
+                        const fb = parent.querySelector('.queue-fallback');
+                        if (fb) (fb as HTMLElement).style.display = 'flex';
+                      }
+                    }}
+                  />
+                ) : null}
+                <div
+                  className={`queue-fallback w-full h-full bg-gradient-to-br from-slate-800 to-indigo-950 flex flex-col items-center justify-center p-3 text-center ${
+                    item.mediaUrl ? 'hidden' : 'flex'
+                  }`}
+                >
+                  <div className="w-9 h-9 rounded-xl bg-white/10 flex items-center justify-center text-white/80 mb-1">
+                    {item.mediaType === 'Video' ? <Video className="w-4 h-4 text-indigo-300" /> : <Camera className="w-4 h-4 text-indigo-300" />}
+                  </div>
+                  <span className="text-[11px] font-bold text-white/90 line-clamp-1">{item.topic}</span>
+                  <span className="text-[9px] text-slate-400">{item.site}</span>
+                </div>
                 {item.topPick && (
                   <div className="absolute top-2 right-2 bg-amber-400 text-slate-950 font-bold text-[10px] px-2 py-0.5 rounded-full flex items-center gap-1 shadow-xs">
                     <Star className="w-3 h-3 fill-slate-950" />

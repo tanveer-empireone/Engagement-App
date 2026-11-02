@@ -199,11 +199,25 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
           <div className="space-y-2">
             {myReshootUploads.slice(0, 3).map((item) => (
               <div key={item.id} className="p-2.5 rounded-2xl bg-white/90 border border-amber-200/60 flex items-start gap-3">
-                <img
-                  src={item.mediaUrl}
-                  alt={item.id}
-                  className="w-12 h-12 rounded-xl object-cover shrink-0 border border-slate-200"
-                />
+                {item.mediaUrl ? (
+                  <img
+                    src={item.mediaUrl}
+                    alt={item.id}
+                    onError={(e) => {
+                      (e.target as HTMLElement).style.display = 'none';
+                      const fb = (e.target as HTMLElement).nextElementSibling;
+                      if (fb) (fb as HTMLElement).style.display = 'flex';
+                    }}
+                    className="w-12 h-12 rounded-xl object-cover shrink-0 border border-slate-200"
+                  />
+                ) : null}
+                <div
+                  className={`w-12 h-12 rounded-xl bg-slate-900 text-white/80 shrink-0 border border-slate-200 items-center justify-center ${
+                    item.mediaUrl ? 'hidden' : 'flex'
+                  }`}
+                >
+                  <Camera className="w-5 h-5 text-amber-400" />
+                </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center justify-between gap-1">
                     <span className="text-xs font-bold text-slate-900 truncate">{item.topic}</span>

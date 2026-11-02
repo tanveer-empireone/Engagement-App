@@ -112,5 +112,6 @@
     "syncState": "OK",
     "stages": []
   },
-  "clickUpToken": ""
+  "clickUpToken": "",
+  "drivePermissions": []
 }

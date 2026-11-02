@@ -13,13 +13,14 @@ import { UserManualView } from './components/UserManualView';
 import { BlockedScreen, SessionLoadingScreen, SignInScreen } from './components/SignInScreen';
 
 const MainContent: React.FC = () => {
-  const { canUseCapture, canSeeIntegrations, canReview } = useSignedInApp();
+  const { canUseCapture, canSeeIntegrations, canReview, isAdmin } = useSignedInApp();
   const [activeTab, setActiveTab] = useState<string>('today');
 
   useEffect(() => {
     if (!canReview && activeTab === 'review') setActiveTab('today');
     if (!canUseCapture && activeTab === 'capture') setActiveTab('today');
     if (!canSeeIntegrations && activeTab === 'connection') setActiveTab('today');
+    if (activeTab === 'drive') setActiveTab('library');
   }, [activeTab, canUseCapture, canSeeIntegrations, canReview]);
 
   return (
@@ -43,7 +44,7 @@ const MainContent: React.FC = () => {
           {activeTab === 'capture' && canUseCapture && (
             <CaptureView onNavigateToLibrary={() => setActiveTab('library')} />
           )}
-          {activeTab === 'library' && <LibraryView />}
+          {(activeTab === 'library' || activeTab === 'drive') && <LibraryView />}
           {activeTab === 'review' && canReview && <ReviewQueueView />}
           {activeTab === 'reports' && <ShiftReportsView />}
           {activeTab === 'connection' && canSeeIntegrations && <ConnectionView />}

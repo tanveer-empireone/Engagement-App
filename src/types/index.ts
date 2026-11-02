@@ -42,7 +42,7 @@ export interface UploadItem {
   topic: string;
   spot: string;
   mediaType: MediaType;
-  mediaUrl: string; // URL / data URI / unsplash placeholder
+  mediaUrl: string; // URL / Google Drive link / data URI
   capturedAt: string; // ISO
   uploadedAt: string; // ISO
   location?: string; // "lat, lng"
@@ -180,3 +180,16 @@ export interface SyncLogEntry {
   state: 'OK' | 'Error' | 'Info';
   detail: string;
 }
+
+export interface DrivePermissionGrant {
+  id: string;
+  targetType: 'all' | 'folder' | 'file';
+  targetId: string;
+  targetName: string;
+  granteeType: 'user' | 'role' | 'site';
+  granteeValue: string;
+  granteeName?: string;
+  grantedBy: string;
+  grantedAt: string;
+}
+

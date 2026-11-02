@@ -20,6 +20,44 @@ export interface DriveItem {
   parents?: string[];
 }
 
+export interface DriveFolder {
+  id: string;
+  name: string;
+  webViewLink?: string;
+  createdTime?: string;
+  modifiedTime?: string;
+  itemCount?: number;
+  imageCount?: number;
+}
+
+export interface DriveImageFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: number;
+  createdTime?: string;
+  modifiedTime?: string;
+  thumbnailLink?: string;
+  webViewLink?: string;
+  webContentLink?: string;
+  folderId?: string;
+  folderName?: string;
+}
+
+export interface FolderWithImages {
+  folder: DriveFolder;
+  images: DriveImageFile[];
+}
+
+export interface DriveTreeResult {
+  rootFolder: { id: string; name: string; webViewLink?: string };
+  foldersWithImages: FolderWithImages[];
+  rootImages: DriveImageFile[];
+  totalFolders: number;
+  totalImages: number;
+  fetchedAt: string;
+}
+
 export interface LiveDriveResult {
   rootFolderId: string;
   rootFolderName: string;
@@ -174,4 +212,109 @@ export async function fetchAllLiveDriveData(
     fetchedAt: new Date().toISOString()
   };
 }
+
+/**
+ * Fetch all Google Drive folders in the root folder, and fetch the images inside each folder.
+ * Uses server proxy fallback for reliable execution in iframe preview.
+ */
+export async function fetchDriveTreeWithImages(
+  accessToken: string,
+  rootFolderId: string = TARGET_DRIVE_ROOT_FOLDER_ID
+): Promise<DriveTreeResult> {
+  // First try server proxy which handles nested folder batching securely and avoids CORS issues
+  try {
+    const proxyRes = await fetch('/api/drive/tree', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ token: accessToken, rootFolderId })
+    });
+    if (proxyRes.ok) {
+      const data = await proxyRes.json();
+      if (data.ok && Array.isArray(data.foldersWithImages)) {
+        return {
+          rootFolder: data.rootFolder || { id: rootFolderId, name: 'E1CX Experience' },
+          foldersWithImages: data.foldersWithImages,
+          rootImages: data.rootImages || [],
+          totalFolders: data.totalFolders || data.foldersWithImages.length,
+          totalImages: data.totalImages || 0,
+          fetchedAt: data.fetchedAt || new Date().toISOString()
+        };
+      }
+    }
+  } catch (proxyErr) {
+    console.warn('Server proxy /api/drive/tree failed, attempting direct Drive API fetch...', proxyErr);
+  }
+
+  // Direct client fetch fallback
+  const folderQuery = `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
+  const folderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`;
+
+  const folderRes = await fetch(folderUrl, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+  });
+
+  if (!folderRes.ok) {
+    const errText = await folderRes.text();
+    throw new Error(`Google Drive API error (${folderRes.status}): ${errText}`);
+  }
+
+  const folderData = await folderRes.json();
+  const rawFolders: any[] = folderData.files || [];
+
+  const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
+  const foldersWithImages: FolderWithImages[] = await Promise.all(
+    rawFolders.map(async (folder) => {
+      try {
+        const imgQuery = `'${folder.id}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+        const imgUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(imgQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=100&orderBy=createdTime desc`;
+        const imgRes = await fetch(imgUrl, {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+        });
+        const imgData = imgRes.ok ? await imgRes.json() : { files: [] };
+        const rawImages = imgData.files || [];
+        return {
+          folder: {
+            id: folder.id,
+            name: folder.name,
+            webViewLink: folder.webViewLink,
+            createdTime: folder.createdTime,
+            modifiedTime: folder.modifiedTime,
+            imageCount: rawImages.length
+          },
+          images: rawImages.map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            size: f.size ? Number(f.size) : undefined,
+            createdTime: f.createdTime,
+            modifiedTime: f.modifiedTime,
+            thumbnailLink: f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, '=s800') : `https://drive.google.com/thumbnail?id=${f.id}&sz=w800`,
+            webViewLink: f.webViewLink,
+            webContentLink: f.webContentLink,
+            folderId: folder.id,
+            folderName: folder.name
+          }))
+        };
+      } catch {
+        return {
+          folder: { id: folder.id, name: folder.name, webViewLink: folder.webViewLink, imageCount: 0 },
+          images: []
+        };
+      }
+    })
+  );
+
+  return {
+    rootFolder: { id: rootFolderId, name: 'E1CX Experience' },
+    foldersWithImages,
+    rootImages: [],
+    totalFolders: foldersWithImages.length,
+    totalImages: foldersWithImages.reduce((sum, f) => sum + f.images.length, 0),
+    fetchedAt: new Date().toISOString()
+  };
+}
+
 

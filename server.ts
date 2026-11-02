@@ -31,6 +31,18 @@ export interface AppIntegrationConfig {
   appsScriptUrl: string;
 }
 
+export interface DrivePermissionGrant {
+  id: string;
+  targetType: 'all' | 'folder' | 'file';
+  targetId: string;
+  targetName: string;
+  granteeType: 'user' | 'role' | 'site';
+  granteeValue: string;
+  granteeName?: string;
+  grantedBy: string;
+  grantedAt: string;
+}
+
 export interface ServerStore {
   people: PersonRecord[];
   config: AppIntegrationConfig;
@@ -41,6 +53,7 @@ export interface ServerStore {
   showCaptureForAdmin: boolean;
   syncHealth: any;
   clickUpToken: string;
+  drivePermissions?: DrivePermissionGrant[];
 }
 
 const INITIAL_STORE: ServerStore = {
@@ -157,7 +170,8 @@ const INITIAL_STORE: ServerStore = {
     syncState: 'OK',
     stages: []
   },
-  clickUpToken: ''
+  clickUpToken: '',
+  drivePermissions: []
 };
 
 function normalizeEmail(email: string | null | undefined): string {
@@ -195,7 +209,8 @@ function readStore(): ServerStore {
         activities: Array.isArray(parsed.activities) ? parsed.activities : [],
         showCaptureForAdmin: Boolean(parsed.showCaptureForAdmin),
         syncHealth: parsed.syncHealth && typeof parsed.syncHealth === 'object' ? parsed.syncHealth : INITIAL_STORE.syncHealth,
-        clickUpToken: typeof parsed.clickUpToken === 'string' ? parsed.clickUpToken : ''
+        clickUpToken: typeof parsed.clickUpToken === 'string' ? parsed.clickUpToken : '',
+        drivePermissions: Array.isArray(parsed.drivePermissions) ? parsed.drivePermissions : []
       };
     }
   } catch (err) {
@@ -417,6 +432,247 @@ export function createExpressApp(): express.Express {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
     }
+  });
+
+  // REST API: Proxy Google Drive folders (Read-only GET)
+  app.post('/api/drive/folders', async (req, res) => {
+    const { token, parentFolderId } = req.body || {};
+    if (!token) {
+      res.status(400).json({ error: 'OAuth token required' });
+      return;
+    }
+    const folderId = parentFolderId || '1U-cZodmbBU6R7cFwp0p4Ily2_KPhPiSN';
+    const query = `'${folderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+    const fields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&pageSize=100&orderBy=name`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json'
+        }
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Proxy Google Drive image files in a folder (Read-only GET)
+  app.post('/api/drive/files', async (req, res) => {
+    const { token, folderId } = req.body || {};
+    if (!token) {
+      res.status(400).json({ error: 'OAuth token required' });
+      return;
+    }
+    const parentId = folderId || '1U-cZodmbBU6R7cFwp0p4Ily2_KPhPiSN';
+    const query = `'${parentId}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+    const fields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
+    const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(query)}&fields=${encodeURIComponent(fields)}&pageSize=100&orderBy=createdTime desc`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json'
+        }
+      });
+      const data = await response.text();
+      res.status(response.status);
+      res.setHeader('Content-Type', 'application/json');
+      res.send(data);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Proxy Google Drive complete folder tree with images (Read-only GET)
+  app.post('/api/drive/tree', async (req, res) => {
+    const { token, rootFolderId } = req.body || {};
+    if (!token) {
+      res.status(400).json({ error: 'OAuth token required' });
+      return;
+    }
+    const rootId = rootFolderId || '1U-cZodmbBU6R7cFwp0p4Ily2_KPhPiSN';
+
+    try {
+      // 1. Fetch root folder details
+      const rootMetaRes = await fetch(`https://www.googleapis.com/drive/v3/files/${rootId}?fields=id,name,webViewLink`, {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+      });
+      const rootMeta = rootMetaRes.ok ? await rootMetaRes.json() : { id: rootId, name: 'E1CX Experience' };
+
+      // 2. Fetch all direct subfolders
+      const folderQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+      const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
+      const folderRes = await fetch(
+        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`,
+        { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+      );
+      const folderData = folderRes.ok ? await folderRes.json() : { files: [] };
+      const folders: any[] = folderData.files || [];
+
+      // 3. For each folder, fetch its image files (in parallel, up to 10 folders)
+      const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
+      const foldersWithImages = await Promise.all(
+        folders.map(async (folder) => {
+          try {
+            const imgQuery = `'${folder.id}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+            const imgRes = await fetch(
+              `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(imgQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=100&orderBy=createdTime desc`,
+              { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+            );
+            const imgData = imgRes.ok ? await imgRes.json() : { files: [] };
+            const rawImages = imgData.files || [];
+            return {
+              folder: {
+                id: folder.id,
+                name: folder.name,
+                webViewLink: folder.webViewLink,
+                createdTime: folder.createdTime,
+                modifiedTime: folder.modifiedTime,
+                imageCount: rawImages.length
+              },
+              images: rawImages.map((f: any) => ({
+                id: f.id,
+                name: f.name,
+                mimeType: f.mimeType,
+                size: f.size ? Number(f.size) : undefined,
+                createdTime: f.createdTime,
+                modifiedTime: f.modifiedTime,
+                thumbnailLink: f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, '=s800') : `https://drive.google.com/thumbnail?id=${f.id}&sz=w800`,
+                webViewLink: f.webViewLink,
+                webContentLink: f.webContentLink,
+                folderId: folder.id,
+                folderName: folder.name
+              }))
+            };
+          } catch {
+            return {
+              folder: { id: folder.id, name: folder.name, webViewLink: folder.webViewLink, imageCount: 0 },
+              images: []
+            };
+          }
+        })
+      );
+
+      // 4. Also fetch images located directly in root folder
+      let rootImages: any[] = [];
+      try {
+        const rootImgQuery = `'${rootId}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+        const rootImgRes = await fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(rootImgQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=50&orderBy=createdTime desc`,
+          { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+        );
+        if (rootImgRes.ok) {
+          const rData = await rootImgRes.json();
+          rootImages = (rData.files || []).map((f: any) => ({
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            size: f.size ? Number(f.size) : undefined,
+            createdTime: f.createdTime,
+            modifiedTime: f.modifiedTime,
+            thumbnailLink: f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, '=s800') : `https://drive.google.com/thumbnail?id=${f.id}&sz=w800`,
+            webViewLink: f.webViewLink,
+            webContentLink: f.webContentLink,
+            folderId: rootId,
+            folderName: rootMeta.name || 'Root'
+          }));
+        }
+      } catch {
+        // ignore root images errors
+      }
+
+      res.json({
+        ok: true,
+        rootFolder: rootMeta,
+        foldersWithImages,
+        rootImages,
+        totalFolders: foldersWithImages.length,
+        totalImages: foldersWithImages.reduce((sum, f) => sum + f.images.length, 0) + rootImages.length,
+        fetchedAt: new Date().toISOString()
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      res.status(500).json({ error: msg });
+    }
+  });
+
+  // REST API: Get Drive permissions
+  app.get('/api/drive/permissions', (_req, res) => {
+    const store = readStore();
+    res.json({ ok: true, permissions: store.drivePermissions || [] });
+  });
+
+  // REST API: Grant Drive permission (Admin only)
+  app.post('/api/drive/permissions', (req, res) => {
+    const { targetType, targetId, targetName, granteeType, granteeValue, granteeName, grantedBy } = req.body || {};
+    if (!targetType || !targetId || !granteeType || !granteeValue) {
+      res.status(400).json({ ok: false, message: 'Missing targetType, targetId, granteeType, or granteeValue' });
+      return;
+    }
+
+    const store = readStore();
+    if (!Array.isArray(store.drivePermissions)) {
+      store.drivePermissions = [];
+    }
+
+    // Check duplicate
+    const exists = store.drivePermissions.some(
+      (p) =>
+        p.targetType === targetType &&
+        p.targetId === targetId &&
+        p.granteeType === granteeType &&
+        p.granteeValue.toLowerCase() === String(granteeValue).toLowerCase()
+    );
+
+    if (exists) {
+      res.json({ ok: true, permissions: store.drivePermissions, message: 'Permission already granted.' });
+      return;
+    }
+
+    const newGrant: DrivePermissionGrant = {
+      id: `perm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      targetType,
+      targetId: String(targetId),
+      targetName: String(targetName || targetId),
+      granteeType,
+      granteeValue: String(granteeValue).trim(),
+      granteeName: granteeName ? String(granteeName).trim() : undefined,
+      grantedBy: grantedBy ? String(grantedBy).trim() : ADMIN_EMAIL,
+      grantedAt: new Date().toISOString()
+    };
+
+    store.drivePermissions.unshift(newGrant);
+    writeStore(store);
+    res.json({ ok: true, permissions: store.drivePermissions, message: `Access granted for ${newGrant.granteeValue}.` });
+  });
+
+  // REST API: Revoke Drive permission
+  app.delete('/api/drive/permissions/:id', (req, res) => {
+    const { id } = req.params;
+    const store = readStore();
+    if (!Array.isArray(store.drivePermissions)) {
+      store.drivePermissions = [];
+    }
+    const initialLen = store.drivePermissions.length;
+    store.drivePermissions = store.drivePermissions.filter((p) => p.id !== id);
+    writeStore(store);
+    res.json({
+      ok: true,
+      permissions: store.drivePermissions,
+      message: store.drivePermissions.length < initialLen ? 'Permission revoked.' : 'Permission not found.'
+    });
   });
 
   // REST API: Proxy Google Sheets append row

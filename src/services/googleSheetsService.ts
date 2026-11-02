@@ -392,7 +392,17 @@ export async function fetchAllLiveSheetData(
       topic: String(getCell(row, ['Topic']) || 'Site Activity'),
       spot: String(getCell(row, ['Spot']) || 'Main Lobby'),
       mediaType,
-      mediaUrl: String(getCell(row, ['Drive File ID', 'Thumbnail Link', 'URL']) || `https://images.unsplash.com/photo-1542744173-8e7e53415bb0?w=600&auto=format&fit=crop&q=80`),
+      mediaUrl: (() => {
+        const raw = String(getCell(row, ['Drive File ID', 'Thumbnail Link', 'URL', 'Media Link']) || '').trim();
+        if (!raw) return '';
+        if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('data:')) {
+          return raw;
+        }
+        if (/^[a-zA-Z0-9_-]{20,}$/.test(raw)) {
+          return `https://drive.google.com/thumbnail?id=${raw}&sz=w800`;
+        }
+        return '';
+      })(),
       fileSizeBytes: Number(getCell(row, ['File Size (Bytes)', 'Size']) || 2500000),
       capturedAt: String(getCell(row, ['Captured At', 'CapturedAt']) || new Date().toISOString()),
       uploadedAt: String(getCell(row, ['Uploaded At', 'UploadedAt']) || new Date().toISOString()),
