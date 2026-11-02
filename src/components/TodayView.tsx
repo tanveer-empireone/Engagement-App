@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useSignedInApp } from '../context/AppContext';
 import { SHIFTS_LIST } from '../utils/idGenerator';
 import { DirectionMessage } from '../types';
+import { canPersonSeeTask, isUniversalTask } from '../utils/access';
 import {
   Camera,
   CheckCircle2,
@@ -64,15 +65,8 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
       r.shiftDate === todayYmd
   );
 
-  // Focus on current published directions
-  const activeDirections = directions.filter((d) => {
-    if (canPublish) return true;
-    const isTargeted =
-      d.toAll ||
-      d.toSite === currentUser.Site ||
-      d.toPerson?.toLowerCase() === currentUser.Email.toLowerCase();
-    return d.status === 'Published' && isTargeted;
-  });
+  // Focus on directions restricted to this user's role and specific site
+  const activeDirections = directions.filter((d) => canPersonSeeTask(currentUser, d));
 
   const publishedDirections = activeDirections.filter((d) => d.status === 'Published');
   const draftDirections = activeDirections.filter((d) => d.status === 'Draft');
@@ -83,7 +77,44 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
   const unacknowledgedDirections = publishedDirections.filter((d) => !isAcknowledged(d));
   const unacknowledgedCount = unacknowledgedDirections.length;
 
-  const handleGotIt = (feedbackId: string, customReply?: string) => {
+  const [openTaskIds, setOpenTaskIds] = useState<Set<string>>(() => {
+    return new Set(publishedDirections.map((d) => d.feedbackId));
+  });
+
+  // Keep all newly arrived tasks open by default
+  useEffect(() => {
+    setOpenTaskIds((prev) => {
+      const next = new Set(prev);
+      publishedDirections.forEach((d) => {
+        if (!prev.has(d.feedbackId) && !isAcknowledged(d)) {
+          next.add(d.feedbackId);
+        }
+      });
+      return next;
+    });
+  }, [publishedDirections.length]);
+
+  const toggleTaskOpen = (feedbackId: string) => {
+    setOpenTaskIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(feedbackId)) {
+        next.delete(feedbackId);
+      } else {
+        next.add(feedbackId);
+      }
+      return next;
+    });
+  };
+
+  const expandAll = () => {
+    setOpenTaskIds(new Set(publishedDirections.map((d) => d.feedbackId)));
+  };
+
+  const collapseAll = () => {
+    setOpenTaskIds(new Set());
+  };
+
+  const handleAcknowledge = (feedbackId: string, customReply?: string) => {
     const textToSend = customReply !== undefined ? customReply : (activeReplyId === feedbackId ? replyText : undefined);
     acknowledgeDirection(feedbackId, textToSend);
     if (activeReplyId === feedbackId) {
@@ -98,9 +129,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     });
   };
 
-  const displayedDirections = selectedFocusId === 'all'
-    ? publishedDirections
-    : publishedDirections.filter((d) => d.feedbackId === selectedFocusId);
+  const allExpanded = publishedDirections.length > 0 && publishedDirections.every((d) => openTaskIds.has(d.feedbackId));
 
   return (
     <div className="space-y-4 pb-28 md:pb-12 max-w-xl mx-auto">
@@ -181,7 +210,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
                     <span className="text-[10px] text-slate-400">{item.spot}</span>
                   </div>
                   <p className="text-[11px] text-amber-900 font-medium mt-0.5 bg-amber-50/80 p-1.5 rounded-lg border border-amber-100">
-                    "{item.reviewNote || 'Please capture a clearer photo with better lighting or participants in frame.'}"
+                    &ldquo;{item.reviewNote || 'Please capture a clearer photo with better lighting or participants in frame.'}&rdquo;
                   </p>
                 </div>
               </div>
@@ -210,7 +239,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
       </button>
       )}
 
-      {/* 3. Today's Focus Card with Dropdown & View All Support */}
+      {/* 3. Today's Focus: Complete List of All Tasks with Accordion Open & Close Dropdowns */}
       {publishedDirections.length === 0 ? (
         <div className="glass-card rounded-3xl p-5 border border-white/70 shadow-sm space-y-2">
           <div className="flex items-center justify-between text-xs text-slate-400">
@@ -224,12 +253,12 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
             All caught up on directions
           </h4>
           <p className="text-xs text-slate-500 leading-relaxed">
-            No specific daily focus broadcasts have been posted for your site yet. Continue with standard site engagement routines and daily spot checks.
+            No specific daily focus tasks have been posted for {currentUser.Site} yet. Continue with standard site engagement routines and daily spot checks.
           </p>
         </div>
       ) : (
-        <div className="glass-card rounded-3xl p-4 sm:p-5 border border-white/70 shadow-sm space-y-3.5 overflow-hidden">
-          {/* Header with Title, Counts, and Dropdown Controls */}
+        <div className="glass-card rounded-3xl p-4 sm:p-5 border border-white/70 shadow-sm space-y-3.5">
+          {/* Header with Title, Counts, and Expand/Collapse Controls */}
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 pb-2.5 border-b border-slate-100">
             <div className="flex items-center flex-wrap gap-1.5 sm:gap-2 min-w-0">
               <span className="font-semibold text-indigo-600 uppercase tracking-wider text-[10px] flex items-center gap-1.5 shrink-0">
@@ -237,271 +266,226 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
                 Today&apos;s Focus
               </span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200/60 shrink-0">
-                {publishedDirections.length} message{publishedDirections.length > 1 ? 's' : ''}
+                {publishedDirections.length} task{publishedDirections.length > 1 ? 's' : ''}
               </span>
-              {unacknowledgedCount > 0 && (
+              {unacknowledgedCount > 0 ? (
                 <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/60 shrink-0">
-                  {unacknowledgedCount} unread
+                  {unacknowledgedCount} unacknowledged
+                </span>
+              ) : (
+                <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200/60 shrink-0 flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" />
+                  All acknowledged
                 </span>
               )}
             </div>
 
-            {/* Dropdown to switch or view all at once, safely framed without overflow */}
-            <div className="flex items-center gap-2 w-full sm:w-auto min-w-0 justify-between sm:justify-end">
-              <div className="relative min-w-0 flex-1 sm:w-48 md:w-56">
-                <label htmlFor="focus-message-dropdown" className="sr-only">
-                  Select focus message
-                </label>
-                <select
-                  id="focus-message-dropdown"
-                  value={selectedFocusId}
-                  onChange={(e) => {
-                    setSelectedFocusId(e.target.value);
-                    setIsFocusExpanded(true);
-                  }}
-                  className="w-full text-xs font-semibold text-slate-800 bg-white/95 hover:bg-white border border-slate-200/90 rounded-xl pl-2.5 pr-7 py-1.5 cursor-pointer transition shadow-2xs appearance-none focus:outline-hidden focus:ring-2 focus:ring-indigo-500/20 truncate"
-                  title="Choose a specific message or show all at once"
+            {/* Quick Actions Header: Acknowledge All & Expand/Collapse Toggle */}
+            <div className="flex items-center gap-2 justify-between sm:justify-end">
+              {unacknowledgedCount > 1 && (
+                <button
+                  type="button"
+                  onClick={handleAcknowledgeAll}
+                  className="text-xs font-semibold px-2.5 py-1 rounded-xl bg-slate-900 hover:bg-slate-800 text-white cursor-pointer transition shadow-2xs flex items-center gap-1"
                 >
-                  <option value="all">
-                    Show all ({publishedDirections.length}) at once
-                  </option>
-                  {publishedDirections.map((d, index) => {
-                    const acked = isAcknowledged(d);
-                    const truncated = d.title.length > 22 ? d.title.slice(0, 22) + '…' : d.title;
-                    return (
-                      <option key={d.feedbackId} value={d.feedbackId}>
-                        {index + 1}. {truncated} {!acked ? '• (New)' : ''}
-                      </option>
-                    );
-                  })}
-                </select>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-500 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
-              </div>
-
-              {/* View all toggle button */}
+                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                  <span>Acknowledge all ({unacknowledgedCount})</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => {
-                  if (selectedFocusId !== 'all') {
-                    setSelectedFocusId('all');
-                    setIsFocusExpanded(true);
-                  } else {
-                    setIsFocusExpanded(!isFocusExpanded);
-                  }
-                }}
-                className="shrink-0 text-xs font-semibold px-2.5 py-1.5 rounded-xl border border-indigo-200/70 bg-indigo-50/70 hover:bg-indigo-100/70 text-indigo-700 cursor-pointer transition flex items-center gap-1 whitespace-nowrap"
-                title={selectedFocusId === 'all' && isFocusExpanded ? 'Collapse list' : 'View all messages together'}
+                onClick={allExpanded ? collapseAll : expandAll}
+                className="text-xs font-semibold px-2.5 py-1 rounded-xl border border-indigo-200/70 bg-indigo-50/70 hover:bg-indigo-100/70 text-indigo-700 cursor-pointer transition flex items-center gap-1 shrink-0"
+                title={allExpanded ? 'Collapse all tasks' : 'Open all tasks'}
               >
-                {selectedFocusId === 'all' && isFocusExpanded ? (
-                  <>
-                    <span>Collapse</span>
-                    <ChevronUp className="w-3.5 h-3.5" />
-                  </>
-                ) : (
-                  <>
-                    <span>View all</span>
-                    <ChevronDown className="w-3.5 h-3.5" />
-                  </>
-                )}
+                <span>{allExpanded ? 'Collapse all' : 'Expand all'}</span>
+                {allExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
               </button>
             </div>
           </div>
 
-          {/* Messages Container */}
-          {!isFocusExpanded && selectedFocusId === 'all' ? (
-            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/60 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-2">
-                <Layers className="w-4 h-4 text-indigo-600" />
-                <span className="font-medium text-slate-700">
-                  {publishedDirections.length} focus messages available for today.
-                </span>
-              </div>
-              <button
-                type="button"
-                onClick={() => setIsFocusExpanded(true)}
-                className="text-xs font-bold text-indigo-600 hover:text-indigo-800 cursor-pointer"
-              >
-                Expand all ▾
-              </button>
-            </div>
-          ) : (
-            <div className="space-y-3">
-              {displayedDirections.map((dir, idx) => {
-                const acked = isAcknowledged(dir);
-                const isReplying = activeReplyId === dir.feedbackId;
+          {/* Full List of All Tasks with Dropdown Open/Close Accordion */}
+          <div className="space-y-3">
+            {publishedDirections.map((dir, idx) => {
+              const acked = isAcknowledged(dir);
+              const isOpen = openTaskIds.has(dir.feedbackId);
+              const isReplying = activeReplyId === dir.feedbackId;
 
-                return (
-                  <div
-                    key={dir.feedbackId}
-                    className={`p-4 rounded-2xl transition border ${
-                      !acked
-                        ? 'bg-white/95 border-indigo-200/80 shadow-xs'
-                        : 'bg-white/70 border-slate-200/70'
-                    }`}
+              return (
+                <div
+                  key={dir.feedbackId}
+                  className={`rounded-2xl transition-all border overflow-hidden ${
+                    !acked
+                      ? 'bg-white border-indigo-200/90 shadow-xs ring-1 ring-indigo-500/10'
+                      : 'bg-white/75 border-slate-200/75 hover:bg-white/90'
+                  }`}
+                >
+                  {/* Clickable Accordion Header */}
+                  <button
+                    type="button"
+                    onClick={() => toggleTaskOpen(dir.feedbackId)}
+                    aria-expanded={isOpen}
+                    className="w-full p-3.5 text-left flex items-start justify-between gap-3 cursor-pointer select-none group"
                   >
-                    {/* Item header badges */}
-                    <div className="flex items-center justify-between text-xs mb-1.5">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {publishedDirections.length > 1 && (
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-2 py-0.5 rounded-md">
-                            #{idx + 1}
-                          </span>
-                        )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 flex-wrap mb-1">
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-md">
+                          #{idx + 1}
+                        </span>
                         <span className="text-[11px] font-semibold text-indigo-700 bg-indigo-50 px-2 py-0.5 rounded-md">
                           {dir.type}
                         </span>
-                        {dir.toAll ? (
+                        {isUniversalTask(dir) ? (
                           <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md">
                             All Sites
                           </span>
                         ) : dir.toSite ? (
-                          <span className="text-[10px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
+                          <span className="text-[10px] font-medium text-indigo-700 bg-indigo-50 border border-indigo-200/50 px-2 py-0.5 rounded-md">
                             Site: {dir.toSite}
                           </span>
                         ) : null}
-                      </div>
-
-                      <span className="text-[10px] text-slate-400">
-                        From {dir.fromPerson ? dir.fromPerson.split('@')[0] : 'Management'}
-                      </span>
-                    </div>
-
-                    {/* Title & Body */}
-                    <h4 className="text-sm md:text-base font-bold text-slate-900 leading-snug">
-                      {dir.title}
-                    </h4>
-                    <p className="text-xs text-slate-600 leading-relaxed mt-1 whitespace-pre-line">
-                      {dir.message}
-                    </p>
-
-                    {/* Officer Reply Display if already submitted */}
-                    {dir.reply && (
-                      <div className="mt-2 text-xs bg-slate-50 border border-slate-200/80 rounded-xl p-2.5 text-slate-700 flex items-start gap-1.5">
-                        <MessageSquare className="w-3.5 h-3.5 text-slate-400 shrink-0 mt-0.5" />
-                        <div>
-                          <span className="font-semibold text-slate-900">Your note: </span>
-                          <span>{dir.reply}</span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Reply Input Box */}
-                    {isReplying && (
-                      <div className="mt-3 pt-2.5 border-t border-slate-100 space-y-2">
-                        <input
-                          type="text"
-                          value={replyText}
-                          onChange={(e) => setReplyText(e.target.value)}
-                          placeholder="Write a note to management..."
-                          aria-label={`Reply to ${dir.title}`}
-                          className="glass-input w-full text-xs px-3 py-2 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-hidden"
-                          autoFocus
-                        />
-                        <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveReplyId(null);
-                              setReplyText('');
-                            }}
-                            className="text-xs text-slate-500 hover:text-slate-700 px-2.5 py-1 rounded-lg cursor-pointer"
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleGotIt(dir.feedbackId)}
-                            className="text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
-                          >
-                            <Send className="w-3.5 h-3.5" />
-                            <span>Send note &amp; acknowledge</span>
-                          </button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Action Bar */}
-                    <div className="pt-2.5 mt-2 border-t border-slate-100/80 flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        {!isReplying && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setActiveReplyId(dir.feedbackId);
-                              setReplyText('');
-                            }}
-                            className="text-[11px] text-slate-500 hover:text-indigo-600 font-medium flex items-center gap-1 cursor-pointer transition-colors"
-                          >
-                            <MessageSquare className="w-3 h-3" />
-                            <span>{dir.reply ? 'Update note' : 'Add note'}</span>
-                          </button>
+                        {acked ? (
+                          <span className="text-[10px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200/60 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Acknowledged
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-bold text-amber-700 bg-amber-50 border border-amber-200/60 px-2 py-0.5 rounded-full">
+                            Pending Acknowledgment
+                          </span>
                         )}
                       </div>
 
-                      {acked ? (
-                        <div className="flex items-center gap-1.5 text-xs text-emerald-600 font-semibold bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200/50">
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Read &amp; Acknowledged</span>
-                        </div>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleGotIt(dir.feedbackId)}
-                          className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-xs transition cursor-pointer"
-                        >
-                          <CheckCircle2 className="w-4 h-4" />
-                          <span>Got it</span>
-                        </button>
+                      <h4 className="text-sm font-bold text-slate-900 group-hover:text-indigo-600 transition-colors leading-snug">
+                        {dir.title}
+                      </h4>
+
+                      {!isOpen && (
+                        <p className="text-xs text-slate-500 truncate mt-0.5">
+                          {dir.message}
+                        </p>
                       )}
                     </div>
-                  </div>
-                );
-              })}
 
-              {/* Quick helper when viewing single item */}
-              {selectedFocusId !== 'all' && publishedDirections.length > 1 && (
-                <div className="pt-1 flex items-center justify-between text-xs text-slate-500">
-                  <span>Viewing 1 of {publishedDirections.length} focus messages</span>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedFocusId('all');
-                      setIsFocusExpanded(true);
-                    }}
-                    className="font-semibold text-indigo-600 hover:text-indigo-800 cursor-pointer"
-                  >
-                    View all {publishedDirections.length} at once →
+                    <div className="flex items-center gap-1 text-slate-400 group-hover:text-indigo-600 shrink-0 pt-0.5">
+                      <span className="text-[11px] font-medium hidden sm:inline">
+                        {isOpen ? 'Close' : 'Open'}
+                      </span>
+                      {isOpen ? (
+                        <ChevronUp className="w-4 h-4" />
+                      ) : (
+                        <ChevronDown className="w-4 h-4" />
+                      )}
+                    </div>
                   </button>
-                </div>
-              )}
 
-              {/* Bulk acknowledge option if multiple unacknowledged messages */}
-              {selectedFocusId === 'all' && unacknowledgedCount > 1 && (
-                <div className="pt-2 flex items-center justify-between px-1">
-                  <span className="text-[11px] text-slate-400">
-                    {unacknowledgedCount} unacknowledged messages remaining
-                  </span>
-                  <button
-                    type="button"
-                    onClick={handleAcknowledgeAll}
-                    className="text-xs font-semibold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200/70 px-3 py-1.5 rounded-xl cursor-pointer transition flex items-center gap-1.5 shadow-2xs"
-                  >
-                    <CheckCircle2 className="w-3.5 h-3.5" />
-                    <span>Got it for all ({unacknowledgedCount})</span>
-                  </button>
+                  {/* Dropdown Body Content (Shown when task is open) */}
+                  {isOpen && (
+                    <div className="px-4 pb-4 pt-1 border-t border-slate-100/90 space-y-3">
+                      <p className="text-xs text-slate-700 leading-relaxed whitespace-pre-line bg-slate-50/70 p-3 rounded-xl border border-slate-100">
+                        {dir.message}
+                      </p>
+
+                      <div className="flex items-center justify-between text-[11px] text-slate-400">
+                        <span>From: {dir.fromPerson ? dir.fromPerson.split('@')[0] : 'Management'}</span>
+                        {dir.source && <span className="font-mono text-[10px] text-slate-400">{dir.source}</span>}
+                      </div>
+
+                      {/* Officer Reply Display if already submitted */}
+                      {dir.reply && (
+                        <div className="text-xs bg-indigo-50/50 border border-indigo-100 rounded-xl p-2.5 text-slate-700 flex items-start gap-1.5">
+                          <MessageSquare className="w-3.5 h-3.5 text-indigo-500 shrink-0 mt-0.5" />
+                          <div>
+                            <span className="font-semibold text-slate-900">Your note: </span>
+                            <span>{dir.reply}</span>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Reply Input Box */}
+                      {isReplying && (
+                        <div className="pt-2 border-t border-slate-100 space-y-2">
+                          <input
+                            type="text"
+                            value={replyText}
+                            onChange={(e) => setReplyText(e.target.value)}
+                            placeholder="Write a note to management..."
+                            aria-label={`Reply to ${dir.title}`}
+                            className="glass-input w-full text-xs px-3 py-2 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-hidden"
+                            autoFocus
+                          />
+                          <div className="flex items-center justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveReplyId(null);
+                                setReplyText('');
+                              }}
+                              className="text-xs text-slate-500 hover:text-slate-700 px-2.5 py-1 rounded-lg cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleAcknowledge(dir.feedbackId)}
+                              className="text-xs font-semibold bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-xl flex items-center gap-1 shadow-xs cursor-pointer transition-colors"
+                            >
+                              <Send className="w-3.5 h-3.5" />
+                              <span>Send note &amp; Acknowledge</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Action Bar */}
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                        <div>
+                          {!isReplying && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveReplyId(dir.feedbackId);
+                                setReplyText(dir.reply || '');
+                              }}
+                              className="text-[11px] text-slate-500 hover:text-indigo-600 font-medium flex items-center gap-1 cursor-pointer transition-colors"
+                            >
+                              <MessageSquare className="w-3 h-3" />
+                              <span>{dir.reply ? 'Edit note' : 'Add note'}</span>
+                            </button>
+                          )}
+                        </div>
+
+                        {acked ? (
+                          <div className="flex items-center gap-1.5 text-xs text-emerald-700 font-semibold bg-emerald-50 px-3 py-1.5 rounded-xl border border-emerald-200/60">
+                            <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            <span>Acknowledged</span>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleAcknowledge(dir.feedbackId)}
+                            className="flex items-center gap-1.5 bg-slate-900 hover:bg-slate-800 active:scale-[0.98] text-white text-xs font-semibold px-4 py-2 rounded-xl shadow-xs transition cursor-pointer"
+                          >
+                            <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                            <span>Acknowledge</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-              )}
-            </div>
-          )}
+              );
+            })}
+          </div>
         </div>
       )}
 
-      {/* 4. Shift Report Quick Status (Simple 1-line check) */}
+      {/* 4. EOD Report Quick Status */}
       <button
         onClick={onNavigateToReports}
         className="w-full glass-card hover:bg-white/80 p-4 rounded-2xl border border-white/60 flex items-center justify-between text-xs cursor-pointer transition"
       >
-        <span className="text-slate-600 font-medium">Shift Report Status</span>
+        <span className="text-slate-600 font-medium">EOD Report Status</span>
         <div className="flex items-center gap-1 text-slate-900 font-semibold">
           <span>
             {myShiftReport?.signedOff
@@ -513,6 +497,7 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
           <ChevronRight className="w-3.5 h-3.5 text-slate-400" />
         </div>
       </button>
+
 
       {/* 5. Lead/Admin Drafts Alert (Quiet, unobtrusive) */}
       {canPublish && draftDirections.length > 0 && (

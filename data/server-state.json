@@ -99,6 +99,7 @@
   "uploads": [],
   "directions": [],
   "shiftReports": [],
+  "activities": [],
   "showCaptureForAdmin": false,
   "syncHealth": {
     "version": "2.0.0",

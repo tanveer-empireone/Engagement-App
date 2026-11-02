@@ -13,6 +13,7 @@ import {
   PanelLeftOpen,
   LogOut,
   Settings,
+  ClipboardList,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -185,6 +186,30 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               {!isCollapsed && <span className="flex-1 text-left">Today's Focus</span>}
             </button>
 
+            {/* My Activities */}
+            <button
+              data-tab="nav-activities"
+              onClick={() => setActiveTab('activities')}
+              title="My Activities"
+              aria-label="My Activities"
+              className={
+                isCollapsed
+                  ? `w-11 h-11 rounded-xl flex items-center justify-center transition cursor-pointer ${
+                      activeTab === 'activities'
+                        ? 'bg-indigo-600 text-white shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70'
+                    }`
+                  : `w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs transition cursor-pointer ${
+                      activeTab === 'activities'
+                        ? 'bg-indigo-600 text-white font-semibold shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/70 font-medium'
+                    }`
+              }
+            >
+              <ClipboardList className="w-4 h-4 shrink-0" />
+              {!isCollapsed && <span className="flex-1 text-left">My Activities</span>}
+            </button>
+
             {canUseCapture && (
             <button
               data-tab="nav-capture"
@@ -249,12 +274,12 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               {!isCollapsed && <span className="flex-1 text-left">Media Library</span>}
             </button>
 
-            {/* Shift Reports */}
+            {/* EOD Report */}
             <button
               data-tab="nav-reports"
               onClick={() => setActiveTab('reports')}
-              title="Shift Reports"
-              aria-label="Shift Reports"
+              title="End of Day Report"
+              aria-label="End of Day Report"
               className={
                 isCollapsed
                   ? `w-11 h-11 rounded-xl flex items-center justify-center transition cursor-pointer ${
@@ -270,7 +295,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
               }
             >
               <FileText className="w-4 h-4 shrink-0" />
-              {!isCollapsed && <span className="flex-1 text-left">Shift Reports</span>}
+              {!isCollapsed && <span className="flex-1 text-left">EOD Report</span>}
             </button>
 
             {/* Review Queue (for Site Leads & Executives) */}
@@ -454,6 +479,18 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             <span className="text-[10px] mt-1">Today</span>
           </button>
 
+          {/* Tab 2: Activities */}
+          <button
+            data-tab="mobile-activities"
+            onClick={() => setActiveTab('activities')}
+            className={`flex flex-col items-center justify-center h-full cursor-pointer transition ${
+              activeTab === 'activities' ? 'text-indigo-600 font-semibold' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <ClipboardList className="w-5 h-5" />
+            <span className="text-[10px] mt-1">Activities</span>
+          </button>
+
           {canUseCapture && (
           <button
             data-tab="mobile-capture"
@@ -487,33 +524,17 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             <span className="text-[10px] mt-1">Library</span>
           </button>
 
-          {/* Tab 4: Review Queue (for Leads/Admins) or Reports (for Officers) */}
-          {canReview ? (
-            <button
-              data-tab="mobile-review"
-              onClick={() => setActiveTab('review')}
-              className={`flex flex-col items-center justify-center h-full cursor-pointer transition relative ${
-                activeTab === 'review' ? 'text-indigo-600 font-semibold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <CheckSquare className="w-5 h-5" />
-              {pendingReviewCount > 0 && (
-                <span className="absolute top-2.5 right-6 w-2 h-2 rounded-full bg-amber-500 ring-2 ring-white" />
-              )}
-              <span className="text-[10px] mt-1">Review</span>
-            </button>
-          ) : (
-            <button
-              data-tab="mobile-reports"
-              onClick={() => setActiveTab('reports')}
-              className={`flex flex-col items-center justify-center h-full cursor-pointer transition ${
-                activeTab === 'reports' ? 'text-indigo-600 font-semibold' : 'text-slate-400 hover:text-slate-600'
-              }`}
-            >
-              <FileText className="w-5 h-5" />
-              <span className="text-[10px] mt-1">Report</span>
-            </button>
-          )}
+          {/* Tab 4: EOD Report */}
+          <button
+            data-tab="mobile-reports"
+            onClick={() => setActiveTab('reports')}
+            className={`flex flex-col items-center justify-center h-full cursor-pointer transition ${
+              activeTab === 'reports' ? 'text-indigo-600 font-semibold' : 'text-slate-400 hover:text-slate-600'
+            }`}
+          >
+            <FileText className="w-5 h-5" />
+            <span className="text-[10px] mt-1">EOD</span>
+          </button>
         </div>
       </nav>
       {isAdmin && adminOpen && <AdminPanel onClose={() => setAdminOpen(false)} />}

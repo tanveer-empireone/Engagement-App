@@ -35,7 +35,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
   const [site] = useState<string>(currentUser.Site || sites[0].SiteName);
   const [shift, setShift] = useState<string>(currentUser.Shift || 'Peak');
   const [isCreativeSubmission, setIsCreativeSubmission] = useState<boolean>(currentUser.Role === 'Creative Designer');
-  const [topic, setTopic] = useState<string>(QUICK_TOPICS[0].value);
+  const [topic, setTopic] = useState<string>('');
   const [note, setNote] = useState<string>('');
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const [isUploading, setIsUploading] = useState<boolean>(false);
@@ -93,6 +93,11 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
   const handleUpload = async () => {
     const pending = stagedFiles.filter((f) => !f.done);
     if (pending.length === 0) return;
+
+    if (!topic) {
+      setWarningMessage('Please select a topic for the upload before submitting.');
+      return;
+    }
 
     setIsUploading(true);
     setWarningMessage(null);
@@ -292,20 +297,34 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         </div>
       )}
 
-      {/* 4. Quick Topic Chips (Instant selection, zero typing) */}
+      {/* 4. Quick Topic Chips (Not preselected) */}
       <div className="glass-card rounded-3xl p-4 border border-white/70 shadow-xs space-y-2">
-        <label className="text-[11px] font-semibold text-slate-500 block">
-          Topic:
-        </label>
+        <div className="flex items-center justify-between">
+          <label className="text-[11px] font-semibold text-slate-700 block">
+            Select Topic: <span className="text-rose-500 font-bold">*</span>
+          </label>
+          {!topic ? (
+            <span className="text-[10px] font-semibold text-amber-600 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200/60">
+              Select one
+            </span>
+          ) : (
+            <span className="text-[10px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full border border-indigo-200/60">
+              Selected
+            </span>
+          )}
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {QUICK_TOPICS.map((t) => (
             <button
               key={t.value}
               type="button"
-              onClick={() => setTopic(t.value)}
+              onClick={() => {
+                setTopic(t.value);
+                setWarningMessage(null);
+              }}
               className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition cursor-pointer ${
                 topic === t.value
-                  ? 'bg-slate-900 text-white shadow-xs'
+                  ? 'bg-slate-900 text-white shadow-xs ring-2 ring-indigo-500/30'
                   : 'bg-white/80 text-slate-600 hover:bg-white border border-slate-200/60'
               }`}
             >

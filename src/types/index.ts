@@ -104,6 +104,33 @@ export interface ShiftReport {
   isLate?: boolean;
 }
 
+export type ActivityCategory =
+  | 'Huddle & Briefing'
+  | 'Floor Engagement'
+  | 'Employee Recognition'
+  | 'Spot Check'
+  | 'Event Prep'
+  | 'Wellness & Morale'
+  | 'Administrative'
+  | 'Other';
+
+export interface UserActivity {
+  id: string;
+  title: string;
+  category: ActivityCategory;
+  officerEmail: string;
+  officerName: string;
+  site: string;
+  shift: string;
+  date: string; // yyyy-MM-dd
+  duration?: string;
+  durationMinutes?: number;
+  status: 'Completed' | 'In Progress';
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
 export interface SyncStage {
   name: 'places' | 'directions' | 'followups' | 'events' | 'sheets' | 'drive' | 'clickup';
   state: 'OK' | 'Error' | 'Running' | 'Not run';

@@ -185,19 +185,19 @@ const PeopleSection: React.FC<{ show: (result: { ok: boolean; message: string })
         </div>
         <div className="grid sm:grid-cols-2 gap-2">
           <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Name"
+            aria-label="New user name"
+            className="glass-input rounded-xl px-3 py-2 text-xs"
+          />
+          <input
             required
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             placeholder="name@empireonecx.com"
             aria-label="New user email"
-            className="glass-input rounded-xl px-3 py-2 text-xs"
-          />
-          <input
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-            placeholder="Name"
-            aria-label="New user name"
             className="glass-input rounded-xl px-3 py-2 text-xs"
           />
           <select
@@ -369,13 +369,13 @@ const PersonRow: React.FC<{
       <div className="flex items-center justify-between gap-2 mb-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <span className="text-xs font-bold text-slate-900 truncate">{person.Email}</span>
+            <span className="text-xs font-bold text-slate-900 truncate">{person.Name}</span>
             <span className={`text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full border ${roleBadgeStyle(person.Role)}`}>
               {person.Role === 'Admin' ? 'Technical Admin' : person.Role}
             </span>
           </div>
-          <div className="text-[11px] text-slate-500 mt-0.5">
-            {person.Active ? 'Active roster access' : 'Access deactivated'}
+          <div className="text-[11px] text-slate-500 font-mono mt-0.5">
+            {person.Email} · {person.Active ? 'Active roster access' : 'Access deactivated'}
           </div>
         </div>
 
@@ -697,14 +697,21 @@ const DirectionEditor: React.FC<{
   item: DirectionMessage;
   show: (result: { ok: boolean; message: string }) => void;
 }> = ({ item, show }) => {
-  const { updateDirection, deleteDirection } = useSignedInApp();
+  const { updateDirection, deleteDirection, sites } = useSignedInApp();
   const [title, setTitle] = useState(item.title);
   const [message, setMessage] = useState(item.message);
 
   return (
     <div className="p-3 rounded-2xl bg-white/80 border border-slate-200/70 space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <div className="text-[10px] font-mono text-slate-500">{item.feedbackId}</div>
+        <div className="flex items-center gap-2">
+          <div className="text-[10px] font-mono text-slate-500">{item.feedbackId}</div>
+          <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-indigo-50 text-indigo-700 border border-indigo-200/50">
+            {item.toAll && (!item.toSite || item.toSite.toLowerCase().includes('all'))
+              ? 'All Sites'
+              : `Site: ${item.toSite || 'All Sites'}`}
+          </span>
+        </div>
         <button
           type="button"
           onClick={() => show(deleteDirection(item.feedbackId))}
@@ -736,6 +743,23 @@ const DirectionEditor: React.FC<{
         >
           <option value="Published">Published</option>
           <option value="Draft">Draft</option>
+        </select>
+        <select
+          value={item.toAll && (!item.toSite || item.toSite.toLowerCase().includes('all')) ? 'All Sites' : (item.toSite || 'All Sites')}
+          aria-label={`Target site for ${item.feedbackId}`}
+          onChange={(event) => {
+            const val = event.target.value;
+            const isAll = val === 'All Sites';
+            show(updateDirection(item.feedbackId, { toSite: val, toAll: isAll }));
+          }}
+          className="glass-input rounded-xl px-3 py-2 text-xs"
+        >
+          <option value="All Sites">All Sites</option>
+          {sites.map((s) => (
+            <option key={s.Code} value={s.SiteName}>
+              {s.SiteName}
+            </option>
+          ))}
         </select>
         <label className="flex items-center gap-2 text-[11px] text-slate-600">
           <input

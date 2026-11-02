@@ -81,3 +81,61 @@ test('server data persistence store maintains integrity', () => {
     fs.unlinkSync(testFile);
   }
 });
+
+test('server store persists user activities and direction acknowledgments', () => {
+  const testDir = path.resolve(process.cwd(), 'data');
+  const testFile = path.join(testDir, 'test-activities-state.json');
+
+  const initialStore = {
+    people: [],
+    config: {},
+    uploads: [],
+    directions: [
+      {
+        feedbackId: 'DIR-001',
+        title: 'Morning Huddle',
+        acknowledged: false,
+        acknowledgedBy: []
+      }
+    ],
+    shiftReports: [],
+    activities: [
+      {
+        id: 'ACT-101',
+        title: 'Morning Floor Walk',
+        category: 'Floor Engagement',
+        officerEmail: 'tanveer@empireonecx.com',
+        officerName: 'Tanveer Hussain',
+        site: 'Cebu City',
+        shift: 'Peak',
+        date: '2026-11-02',
+        duration: '30 mins',
+        status: 'Completed',
+        createdAt: new Date().toISOString()
+      }
+    ]
+  };
+
+  fs.writeFileSync(testFile, JSON.stringify(initialStore, null, 2), 'utf-8');
+
+  // Read back
+  const data = JSON.parse(fs.readFileSync(testFile, 'utf-8'));
+  assert.equal(data.activities.length, 1);
+  assert.equal(data.activities[0].title, 'Morning Floor Walk');
+  assert.equal(data.activities[0].status, 'Completed');
+
+  // Acknowledge direction
+  data.directions[0].acknowledged = true;
+  data.directions[0].acknowledgedBy = ['tanveer@empireonecx.com'];
+  data.directions[0].reply = 'Acknowledged on time.';
+  fs.writeFileSync(testFile, JSON.stringify(data, null, 2), 'utf-8');
+
+  const afterAck = JSON.parse(fs.readFileSync(testFile, 'utf-8'));
+  assert.equal(afterAck.directions[0].acknowledged, true);
+  assert.deepEqual(afterAck.directions[0].acknowledgedBy, ['tanveer@empireonecx.com']);
+  assert.equal(afterAck.directions[0].reply, 'Acknowledged on time.');
+
+  if (fs.existsSync(testFile)) {
+    fs.unlinkSync(testFile);
+  }
+});

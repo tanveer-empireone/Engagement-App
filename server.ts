@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+const PORT = 3000;
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
 
@@ -37,6 +37,7 @@ export interface ServerStore {
   uploads: any[];
   directions: any[];
   shiftReports: any[];
+  activities: any[];
   showCaptureForAdmin: boolean;
   syncHealth: any;
   clickUpToken: string;
@@ -143,6 +144,7 @@ const INITIAL_STORE: ServerStore = {
   uploads: [],
   directions: [],
   shiftReports: [],
+  activities: [],
   showCaptureForAdmin: false,
   syncHealth: {
     version: '2.0.0',
@@ -190,6 +192,7 @@ function readStore(): ServerStore {
         uploads: Array.isArray(parsed.uploads) ? parsed.uploads : INITIAL_STORE.uploads,
         directions: Array.isArray(parsed.directions) ? parsed.directions : INITIAL_STORE.directions,
         shiftReports: Array.isArray(parsed.shiftReports) ? parsed.shiftReports : INITIAL_STORE.shiftReports,
+        activities: Array.isArray(parsed.activities) ? parsed.activities : [],
         showCaptureForAdmin: Boolean(parsed.showCaptureForAdmin),
         syncHealth: parsed.syncHealth && typeof parsed.syncHealth === 'object' ? parsed.syncHealth : INITIAL_STORE.syncHealth,
         clickUpToken: typeof parsed.clickUpToken === 'string' ? parsed.clickUpToken : ''
@@ -244,6 +247,11 @@ export function createExpressApp(): express.Express {
       const msg = err instanceof Error ? err.message : String(err);
       res.status(500).json({ error: msg });
     }
+  });
+
+  // Health check endpoint
+  app.get('/api/server/health', (_req, res) => {
+    res.json({ status: 'ok', uptime: process.uptime(), time: new Date().toISOString() });
   });
 
   // REST API: Get full server state
@@ -793,7 +801,7 @@ export function createExpressApp(): express.Express {
 
   // REST API: Acknowledge Direction
   app.post('/api/directions/acknowledge', (req, res) => {
-    const { feedbackId, email, reply } = req.body || {};
+    const { feedbackId, email, reply, direction } = req.body || {};
     const store = readStore();
     const index = store.directions.findIndex((d) => d.feedbackId === feedbackId);
     if (index !== -1) {
@@ -802,12 +810,72 @@ export function createExpressApp(): express.Express {
         ...store.directions[index],
         acknowledged: true,
         acknowledgedAt: new Date().toISOString(),
-        acknowledgedBy: Array.from(new Set([...prevAck, email])),
+        acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
         reply: reply || store.directions[index].reply
       };
       writeStore(store);
+    } else if (direction && feedbackId) {
+      const prevAck = direction.acknowledgedBy || [];
+      store.directions.unshift({
+        ...direction,
+        acknowledged: true,
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
+        reply: reply || direction.reply || ''
+      });
+      writeStore(store);
+    } else if (feedbackId) {
+      store.directions.unshift({
+        feedbackId,
+        title: 'Task ' + feedbackId,
+        message: '',
+        type: 'General',
+        priority: 'Normal',
+        targetSites: ['All'],
+        targetAudience: 'All Engagement Officers',
+        targetRole: 'Engagement Officer',
+        acknowledged: true,
+        acknowledgedAt: new Date().toISOString(),
+        acknowledgedBy: email ? [email] : [],
+        sentAt: new Date().toISOString(),
+        status: 'Published'
+      } as any);
+      writeStore(store);
     }
     res.json({ ok: true, directions: store.directions });
+  });
+
+  // REST API: User Activities CRUD
+  app.get('/api/activities', (_req, res) => {
+    const store = readStore();
+    res.json({ ok: true, activities: store.activities || [] });
+  });
+
+  app.post('/api/activities', (req, res) => {
+    const { activity } = req.body || {};
+    if (!activity || !activity.id) {
+      res.status(400).json({ ok: false, message: 'Activity with id required' });
+      return;
+    }
+    const store = readStore();
+    if (!Array.isArray(store.activities)) store.activities = [];
+    const index = store.activities.findIndex((a) => a.id === activity.id);
+    if (index !== -1) {
+      store.activities[index] = { ...store.activities[index], ...activity, updatedAt: new Date().toISOString() };
+    } else {
+      store.activities = [activity, ...store.activities];
+    }
+    writeStore(store);
+    res.json({ ok: true, activities: store.activities });
+  });
+
+  app.delete('/api/activities/:id', (req, res) => {
+    const { id } = req.params;
+    const store = readStore();
+    if (!Array.isArray(store.activities)) store.activities = [];
+    store.activities = store.activities.filter((a) => a.id !== id);
+    writeStore(store);
+    res.json({ ok: true, activities: store.activities });
   });
 
   // REST API: Publish Direction
@@ -867,8 +935,7 @@ export async function startServer() {
   return app;
 }
 
-const isDirectRun = Boolean(process.argv[1] && fileURLToPath(import.meta.url) === path.resolve(process.argv[1]));
-if (!process.env.VERCEL && isDirectRun) {
+if (!process.env.VERCEL && !process.env.IS_SERVERLESS) {
   startServer().catch((err) => {
     console.error('Failed to start server:', err);
     process.exit(1);

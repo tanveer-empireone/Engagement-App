@@ -431,9 +431,14 @@ export async function fetchAllLiveSheetData(
       source: String(getCell(row, ['Source']) || `ClickUp:${getCell(row, ['Task ID', 'Task']) || 'task'}`),
       fromPerson: String(getCell(row, ['Author', 'Sent By']) || 'Admin'),
       sentAt: String(getCell(row, ['Sent At', 'Created At']) || new Date().toISOString()),
-      toAll: String(getCell(row, ['To All'])).toLowerCase() !== 'false',
-      toSite: getCell(row, ['Site']) ? String(getCell(row, ['Site'])) : undefined,
-      toPerson: getCell(row, ['To Person']) ? String(getCell(row, ['To Person'])) : undefined,
+      toAll: (() => {
+        const s = getCell(row, ['Site', 'To Site', 'Target Site']) ? String(getCell(row, ['Site', 'To Site', 'Target Site'])).trim() : '';
+        const raw = String(getCell(row, ['To All', 'All Sites'])).trim().toLowerCase();
+        const hasSpecificSite = Boolean(s && !['all', 'all sites', 'global', '*'].includes(s.toLowerCase()));
+        return hasSpecificSite ? (raw === 'true' || raw === 'yes') : (raw !== 'false' && raw !== 'no');
+      })(),
+      toSite: getCell(row, ['Site', 'To Site', 'Target Site']) ? String(getCell(row, ['Site', 'To Site', 'Target Site'])).trim() : undefined,
+      toPerson: getCell(row, ['To Person']) ? String(getCell(row, ['To Person'])).trim() : undefined,
       status: (String(getCell(row, ['Status']) || 'Published') === 'Draft' ? 'Draft' : 'Published') as 'Draft' | 'Published',
       acknowledged: isAck,
       acknowledgedBy: getCell(row, ['Acknowledged By']) ? String(getCell(row, ['Acknowledged By'])).split(',').map((s) => s.trim()) : [],

@@ -1,4 +1,4 @@
-import { Person, Role } from '../types';
+import { DirectionMessage, Person, Role } from '../types';
 
 /** The original admin. This account stays Admin and cannot be demoted. */
 export const ADMIN_EMAIL = 'tanveer@empireonecx.com';
@@ -138,4 +138,102 @@ export function samePersonRecord(a: Person, b: Person): boolean {
     a.Active === b.Active &&
     a.Avatar === b.Avatar
   );
+}
+
+export function normalizeSite(site: string | undefined | null): string {
+  if (!site) return '';
+  return site.trim().toLowerCase().replace(/[\-_]/g, ' ').replace(/\s+/g, ' ');
+}
+
+/**
+ * Checks whether two site names or codes refer to the same site.
+ * Supports site codes (CEB, CAR, SNC, URD, TOR, SMR) and aliases.
+ */
+export function isSiteMatch(siteA: string | undefined | null, siteB: string | undefined | null): boolean {
+  const a = normalizeSite(siteA);
+  const b = normalizeSite(siteB);
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const siteAliasGroups: string[][] = [
+    ['ceb', 'cebu', 'cebu city'],
+    ['car', 'carcar', 'carcar city'],
+    ['snc', 'san carlos', 'san carlos city'],
+    ['urd', 'urdaneta', 'urdaneta city'],
+    ['tor', 'toronto'],
+    ['smr', 'santa marta', 'samar']
+  ];
+
+  for (const group of siteAliasGroups) {
+    const aInGroup = group.some((alias) => a === alias || a.includes(alias) || alias.includes(a));
+    const bInGroup = group.some((alias) => b === alias || b.includes(alias) || alias.includes(b));
+    if (aInGroup && bInGroup) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Determines if a task is intended for all sites across the organization.
+ * If toSite specifies a distinct site (like "Carcar"), it is never universal.
+ */
+export function isUniversalTask(task: DirectionMessage): boolean {
+  const site = normalizeSite(task.toSite);
+  const isAllSitesLabel = site === 'all' || site === 'all sites' || site === 'global' || site === 'all locations' || site === '*';
+
+  // If toSite points to a specific site, it is not universal
+  if (site && !isAllSitesLabel) {
+    return false;
+  }
+
+  return Boolean(task.toAll || isAllSitesLabel);
+}
+
+/**
+ * Configures task visibility:
+ * Engagement Officers only see tasks relevant to their specific site (or direct personal assignments).
+ */
+export function canPersonSeeTask(person: Person | null, task: DirectionMessage): boolean {
+  if (!person || person.Active === false) return false;
+
+  // Technical Admins and Directors have wide organizational oversight
+  if (isAdminPerson(person) || isDirectorPerson(person)) {
+    return true;
+  }
+
+  // Draft directions are only visible to editors/admins
+  if (task.status === 'Draft') {
+    return false;
+  }
+
+  // Direct personal assignment: If the task is targeted to this person by email
+  if (task.toPerson && normalizeEmail(task.toPerson) === normalizeEmail(person.Email)) {
+    return true;
+  }
+
+  // Engagement Officers: visibility is strictly restricted to tasks relevant to their specific site
+  if (person.Role === 'Officer') {
+    // If the task targets a specific site, it must match the officer's site
+    if (task.toSite && !isUniversalTask(task)) {
+      return isSiteMatch(task.toSite, person.Site);
+    }
+    // If the task is universal (company-wide / all sites)
+    if (isUniversalTask(task)) {
+      return true;
+    }
+    // Fallback: match by site
+    return isSiteMatch(task.toSite, person.Site);
+  }
+
+  // Site Managers: see tasks for their site or universal tasks
+  if (person.Role === 'Site Manager') {
+    if (task.toSite && !isUniversalTask(task)) {
+      return isSiteMatch(task.toSite, person.Site);
+    }
+    return isUniversalTask(task);
+  }
+
+  // Other roles (e.g. Creative Designer): see universal tasks or tasks for their site
+  if (isUniversalTask(task)) return true;
+  return isSiteMatch(task.toSite, person.Site);
 }

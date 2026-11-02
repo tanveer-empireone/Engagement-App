@@ -7,6 +7,7 @@ import { CaptureView } from './components/CaptureView';
 import { LibraryView } from './components/LibraryView';
 import { ReviewQueueView } from './components/ReviewQueueView';
 import { ShiftReportsView } from './components/ShiftReportsView';
+import { MyActivitiesView } from './components/MyActivitiesView';
 import { ConnectionView } from './components/ConnectionView';
 import { UserManualView } from './components/UserManualView';
 import { BlockedScreen, SessionLoadingScreen, SignInScreen } from './components/SignInScreen';
@@ -31,6 +32,12 @@ const MainContent: React.FC = () => {
             <TodayView
               onNavigateToCapture={() => setActiveTab('capture')}
               onNavigateToReports={() => setActiveTab('reports')}
+            />
+          )}
+          {activeTab === 'activities' && (
+            <MyActivitiesView
+              onNavigateToCapture={() => setActiveTab('capture')}
+              onNavigateToEOD={() => setActiveTab('reports')}
             />
           )}
           {activeTab === 'capture' && canUseCapture && (

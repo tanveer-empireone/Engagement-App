@@ -14,18 +14,52 @@ import {
 import { SHIFTS_LIST, SPOTS_LIST } from '../utils/idGenerator';
 
 export const ShiftReportsView: React.FC = () => {
-  const { shiftReports, addShiftReport, signOffReport, currentUser, sites, canReview } = useSignedInApp();
+  const { shiftReports, addShiftReport, signOffReport, currentUser, sites, canReview, activities, uploads, directions } = useSignedInApp();
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [site, setSite] = useState(currentUser.Site || sites[0].SiteName);
   const [shift, setShift] = useState(currentUser.Shift || 'Peak');
   const [shiftDate, setShiftDate] = useState(new Date().toISOString().slice(0, 10));
   const [engagementDone, setEngagementDone] = useState('');
-  const [photosCount, setPhotosCount] = useState(5);
+  const [photosCount, setPhotosCount] = useState(0);
   const [videosCount, setVideosCount] = useState(0);
   const [hoursWorked, setHoursWorked] = useState(8);
   const [spotChecks, setSpotChecks] = useState<string[]>([SPOTS_LIST[0], SPOTS_LIST[1]]);
   const [notes, setNotes] = useState('');
+
+  const openNewReportModal = () => {
+    const todayYmd = shiftDate;
+    // Calculate today's uploads
+    const todayUploads = uploads.filter(
+      (u) => u.officer.toLowerCase() === currentUser.Email.toLowerCase() && u.shiftDate === todayYmd
+    );
+    const photos = todayUploads.filter((u) => u.mediaType === 'Photo').length;
+    const videos = todayUploads.filter((u) => u.mediaType === 'Video').length;
+    setPhotosCount(photos);
+    setVideosCount(videos);
+
+    // Accumulate activities from My Activities
+    const dayActivities = activities.filter(
+      (a) => a.officerEmail?.toLowerCase() === currentUser.Email.toLowerCase() && a.date === todayYmd
+    );
+
+    const dayAcks = directions.filter(
+      (d) => d.acknowledged || d.acknowledgedBy?.includes(currentUser.Email)
+    );
+
+    const activityBullets = dayActivities.map(
+      (a) => `• [${a.category}] ${a.title} (${a.duration || '30m'})${a.notes ? ` - ${a.notes}` : ''}`
+    );
+
+    const autoSummary = [
+      activityBullets.length > 0 ? `Daily Engagements Completed:\n${activityBullets.join('\n')}` : '',
+      todayUploads.length > 0 ? `Captured ${todayUploads.length} photo/media submissions for the shift.` : '',
+      dayAcks.length > 0 ? `Acknowledged ${dayAcks.length} management directives & tasks.` : ''
+    ].filter(Boolean).join('\n\n');
+
+    setEngagementDone(autoSummary || 'Completed daily engagement walkthrough, floor games, and shift briefs.');
+    setIsModalOpen(true);
+  };
 
   const toggleSpotCheck = (spot: string) => {
     if (spotChecks.includes(spot)) {
@@ -70,19 +104,19 @@ export const ShiftReportsView: React.FC = () => {
       <div className="glass-card rounded-3xl p-4 sm:p-5 border border-white/70 shadow-xs flex items-center justify-between">
         <div>
           <h2 className="text-lg sm:text-xl font-bold tracking-tight text-slate-900">
-            Shift Reports
+            End of Day (EOD) Reports
           </h2>
           <p className="text-xs text-slate-500">
-            Shift summaries &amp; adherence verification
+            Shift summaries, daily activity accumulation &amp; adherence verification
           </p>
         </div>
 
         <button
-          onClick={() => setIsModalOpen(true)}
+          onClick={openNewReportModal}
           className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-[0.98] text-white text-xs font-semibold px-4 py-2 rounded-2xl shadow-xs transition cursor-pointer"
         >
           <Plus className="w-3.5 h-3.5" />
-          <span>New Report</span>
+          <span>New EOD Report</span>
         </button>
       </div>
 
@@ -90,9 +124,9 @@ export const ShiftReportsView: React.FC = () => {
       {shiftReports.length === 0 ? (
         <div className="glass-card rounded-3xl p-10 text-center text-xs text-slate-400">
           <FileText className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-          <p className="font-semibold text-slate-700">No shift reports filed yet</p>
+          <p className="font-semibold text-slate-700">No EOD reports filed yet</p>
           <p className="text-[11px] text-slate-400 mt-0.5">
-            Click &ldquo;New Report&rdquo; to submit your shift summary.
+            Click &ldquo;New EOD Report&rdquo; to compile and submit your daily summary.
           </p>
         </div>
       ) : (
@@ -114,7 +148,7 @@ export const ShiftReportsView: React.FC = () => {
             </div>
 
             <div>
-              <p className="text-xs text-slate-700 leading-relaxed font-sans">
+              <p className="text-xs text-slate-700 leading-relaxed font-sans whitespace-pre-line">
                 {report.engagementDone}
               </p>
             </div>
@@ -162,7 +196,7 @@ export const ShiftReportsView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-md flex items-end sm:items-center justify-center p-0 sm:p-4">
           <div className="glass-card rounded-t-3xl sm:rounded-3xl max-w-lg w-full max-h-[85vh] overflow-y-auto p-5 shadow-2xl border border-white/80 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-              <h3 className="font-bold text-slate-900 text-sm">Submit Shift Report</h3>
+              <h3 className="font-bold text-slate-900 text-sm">Submit End of Day (EOD) Report</h3>
               <button
                 onClick={() => setIsModalOpen(false)}
                 className="text-slate-400 hover:text-slate-600"

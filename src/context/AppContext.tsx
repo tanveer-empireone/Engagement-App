@@ -14,7 +14,8 @@ import {
   ReviewStatus,
   Role,
   AppIntegrationConfig,
-  ConnectorReport
+  ConnectorReport,
+  UserActivity
 } from '../types';
 import {
   INITIAL_PEOPLE,
@@ -25,6 +26,53 @@ import {
   INITIAL_LEDGER,
   INITIAL_LOGS
 } from '../data/seedData';
+
+function getLocalAckMap(email?: string): Record<string, { acknowledgedAt: string; reply?: string }> {
+  try {
+    const key = `e1_acks_${(email || '').trim().toLowerCase()}`;
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveLocalAck(email: string | undefined, feedbackId: string, reply?: string) {
+  try {
+    const key = `e1_acks_${(email || '').trim().toLowerCase()}`;
+    const map = getLocalAckMap(email);
+    map[feedbackId] = { acknowledgedAt: new Date().toISOString(), reply };
+    localStorage.setItem(key, JSON.stringify(map));
+  } catch (err) {
+    console.warn('Failed to save ack to localStorage:', err);
+  }
+}
+
+function applyAckMap(
+  dirs: DirectionMessage[],
+  email: string | undefined
+): DirectionMessage[] {
+  const normEmail = (email || '').trim().toLowerCase();
+  const ackMap = getLocalAckMap(email);
+  return dirs.map((d) => {
+    const local = ackMap[d.feedbackId];
+    const isAckedByEmail = Boolean(
+      normEmail && d.acknowledgedBy?.some((e) => (e || '').trim().toLowerCase() === normEmail)
+    );
+    if (local || isAckedByEmail || d.acknowledged) {
+      const ackByList = d.acknowledgedBy || [];
+      const mergedBy = normEmail && !ackByList.includes(normEmail) ? [...ackByList, normEmail] : ackByList;
+      return {
+        ...d,
+        acknowledged: true,
+        acknowledgedAt: d.acknowledgedAt || local?.acknowledgedAt || new Date().toISOString(),
+        acknowledgedBy: mergedBy,
+        reply: d.reply || local?.reply
+      };
+    }
+    return d;
+  });
+}
 import {
   SITES_METADATA,
   TOPICS_LIST,
@@ -148,7 +196,7 @@ interface AppContextType {
   updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => ActionResult;
   deleteUpload: (id: string) => ActionResult;
   deleteAllUploads: () => ActionResult;
-  updateDirection: (feedbackId: string, patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged'>>) => ActionResult;
+  updateDirection: (feedbackId: string, patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged' | 'toSite' | 'toAll'>>) => ActionResult;
   deleteDirection: (feedbackId: string) => ActionResult;
   deleteAllDirections: () => ActionResult;
   updateShiftReport: (reportId: string, patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>) => ActionResult;
@@ -179,6 +227,13 @@ interface AppContextType {
   reviewUpload: (id: string, decision: ReviewStatus, note?: string) => Promise<void>;
   toggleUsedInFinal: (id: string) => void;
   approveFinalCreative: (id: string) => void;
+  activities: UserActivity[];
+  addActivity: (
+    activity: Omit<UserActivity, 'id' | 'createdAt' | 'officerEmail' | 'officerName' | 'site' | 'shift'> &
+      Partial<Pick<UserActivity, 'officerEmail' | 'officerName' | 'site' | 'shift'>>
+  ) => Promise<ActionResult>;
+  updateActivity: (id: string, patch: Partial<UserActivity>) => Promise<ActionResult>;
+  deleteActivity: (id: string) => Promise<ActionResult>;
   acknowledgeDirection: (feedbackId: string, reply?: string) => void;
   publishDirection: (feedbackId: string) => void;
   addShiftReport: (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => void;
@@ -239,8 +294,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [sites, setSites] = useState<Site[]>(SITES_METADATA);
   const [topics, setTopics] = useState<Topic[]>(TOPICS_LIST);
   const [uploads, setUploads] = useState<UploadItem[]>(INITIAL_UPLOADS);
-  const [directions, setDirections] = useState<DirectionMessage[]>(INITIAL_DIRECTIONS);
+  const [directions, setDirections] = useState<DirectionMessage[]>(() => applyAckMap(INITIAL_DIRECTIONS, undefined));
   const [shiftReports, setShiftReports] = useState<ShiftReport[]>(INITIAL_REPORTS);
+  const [activities, setActivities] = useState<UserActivity[]>([]);
   const [syncHealth, setSyncHealth] = useState<SyncHealth>(INITIAL_SYNC_HEALTH);
   const [syncLedger, setSyncLedger] = useState<SyncLedgerEntry[]>(INITIAL_LEDGER);
   const [syncLogs, setSyncLogs] = useState<SyncLogEntry[]>(INITIAL_LOGS);
@@ -270,6 +326,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [lastSyncReport, setLastSyncReport] = useState<ConnectorReport[] | null>(null);
   const [showCaptureForAdmin, setShowCaptureForAdminState] = useState<boolean>(false);
 
+  // Fetch initial activities on mount
+  useEffect(() => {
+    fetch('/api/activities')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.ok && Array.isArray(data.activities)) {
+          setActivities(data.activities);
+        }
+      })
+      .catch((err) => console.warn('Activities initial fetch note:', err));
+  }, []);
+
   // The server owns access and settings; keep every mounted session up to date in real time.
   useEffect(() => subscribeServerState<{
     people: Person[];
@@ -277,6 +345,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     uploads: UploadItem[];
     directions: DirectionMessage[];
     shiftReports: ShiftReport[];
+    activities?: UserActivity[];
     showCaptureForAdmin: boolean;
     syncHealth: SyncHealth;
     clickUpToken: string;
@@ -291,22 +360,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (typeof data.showCaptureForAdmin === 'boolean') setShowCaptureForAdminState(data.showCaptureForAdmin);
     if (typeof data.clickUpToken === 'string') setClickUpTokenState(data.clickUpToken);
 
-    // Keep records, directions, reports, and sync health in sync with server state across all user sessions
+    // Keep records, directions, reports, activities, and sync health in sync with server state across all user sessions
     if (!liveSheetsMetaRef.current) {
       if (Array.isArray(data.uploads)) {
         setUploads((prev) => (JSON.stringify(prev) === JSON.stringify(data.uploads) ? prev : data.uploads));
       }
       if (Array.isArray(data.directions)) {
-        setDirections((prev) => (JSON.stringify(prev) === JSON.stringify(data.directions) ? prev : data.directions));
+        setDirections((prev) => {
+          const applied = applyAckMap(data.directions, googleUser?.email || undefined);
+          return JSON.stringify(prev) === JSON.stringify(applied) ? prev : applied;
+        });
       }
       if (Array.isArray(data.shiftReports)) {
         setShiftReports((prev) => (JSON.stringify(prev) === JSON.stringify(data.shiftReports) ? prev : data.shiftReports));
+      }
+      if (Array.isArray(data.activities)) {
+        setActivities((prev) => (JSON.stringify(prev) === JSON.stringify(data.activities) ? prev : (data.activities || [])));
       }
       if (data.syncHealth) {
         setSyncHealth((prev) => (JSON.stringify(prev) === JSON.stringify(data.syncHealth) ? prev : data.syncHealth));
       }
     }
-  }, (error) => console.warn('Could not refresh server settings:', error)), []);
+  }, (error) => console.warn('Could not refresh server settings:', error)), [googleUser?.email]);
 
   const googleEmail = googleUser?.email || '';
   const googleName = googleUser?.displayName || '';
@@ -567,24 +642,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       setIsClickUpConnected(true);
 
       if (result.tasks.length > 0) {
-        const clickUpDirections: DirectionMessage[] = result.tasks.map((task) => ({
-          feedbackId: `CU-${task.id}`,
-          title: task.name,
-          message: task.description || task.name,
-          type: "Today's tasks",
-          source: `ClickUp:${task.id}`,
-          fromPerson: task.creator?.username || 'ClickUp Space',
-          sentAt: task.date_created ? new Date(parseInt(task.date_created, 10)).toISOString() : new Date().toISOString(),
-          toAll: true,
-          toSite: task.list?.name || 'All Sites',
-          status: 'Published',
-          acknowledged: task.status?.type === 'closed',
-          acknowledgedBy: task.assignees?.map((a) => a.username) || []
-        }));
+        const userEmail = googleUser?.email || undefined;
+        const ackMap = getLocalAckMap(userEmail);
+        const clickUpDirections: DirectionMessage[] = result.tasks.map((task) => {
+          const listName = (task.list?.name || '').trim();
+          const isAllSites = !listName || ['all', 'all sites', 'general', 'global'].includes(listName.toLowerCase());
+          const feedbackId = `CU-${task.id}`;
+          const isAckedLocally = Boolean(ackMap[feedbackId]);
+          return {
+            feedbackId,
+            title: task.name,
+            message: task.description || task.name,
+            type: "Today's tasks",
+            source: `ClickUp:${task.id}`,
+            fromPerson: task.creator?.username || 'ClickUp Space',
+            sentAt: task.date_created ? new Date(parseInt(task.date_created, 10)).toISOString() : new Date().toISOString(),
+            toAll: isAllSites,
+            toSite: listName || 'All Sites',
+            status: 'Published',
+            acknowledged: task.status?.type === 'closed' || isAckedLocally,
+            acknowledgedBy: task.assignees?.map((a) => a.username) || []
+          };
+        });
 
         setDirections((prev) => {
+          const prevMap = new Map(prev.map((d) => [d.feedbackId, d]));
+          const mergedCU = clickUpDirections.map((d) => {
+            const existing = prevMap.get(d.feedbackId);
+            if (existing?.acknowledged) {
+              return {
+                ...d,
+                acknowledged: true,
+                acknowledgedAt: existing.acknowledgedAt || d.acknowledgedAt,
+                acknowledgedBy: Array.from(new Set([...(d.acknowledgedBy || []), ...(existing.acknowledgedBy || [])])),
+                reply: existing.reply || d.reply
+              };
+            }
+            return d;
+          });
           const nonClickUp = prev.filter((d) => !d.feedbackId.startsWith('CU-'));
-          return [...clickUpDirections, ...nonClickUp];
+          return applyAckMap([...mergedCU, ...nonClickUp], userEmail);
         });
       }
 
@@ -822,6 +919,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const acknowledgeDirection = (feedbackId: string, reply?: string) => {
     if (!currentUser) return;
     const now = new Date().toISOString();
+    saveLocalAck(currentUser.Email, feedbackId, reply);
+
+    const targetDir = directions.find((d) => d.feedbackId === feedbackId);
+
     setDirections((prev) =>
       prev.map((d) => {
         if (d.feedbackId !== feedbackId) return d;
@@ -839,7 +940,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     fetch('/api/directions/acknowledge', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feedbackId, email: currentUser.Email, reply })
+      body: JSON.stringify({
+        feedbackId,
+        email: currentUser.Email,
+        reply,
+        direction: targetDir ? { ...targetDir, acknowledged: true, acknowledgedAt: now } : undefined
+      })
     }).catch((err) => console.error('Failed to save direction acknowledgment to server:', err));
 
     setSyncLogs((prev) => [
@@ -848,10 +954,75 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         time: now,
         stage: 'directions',
         state: 'OK',
-        detail: `${currentUser.Name} acknowledged direction ${feedbackId} on the server.`
+        detail: `${currentUser.Name} acknowledged task ${feedbackId}.`
       },
       ...prev
     ]);
+  };
+
+  const addActivity = async (
+    input: Omit<UserActivity, 'id' | 'createdAt' | 'officerEmail' | 'officerName' | 'site' | 'shift'> &
+      Partial<Pick<UserActivity, 'officerEmail' | 'officerName' | 'site' | 'shift'>>
+  ): Promise<ActionResult> => {
+    if (!currentUser) return { ok: false, message: 'You must be signed in to add an activity.' };
+    const now = new Date().toISOString();
+    const newActivity: UserActivity = {
+      ...input,
+      id: `ACT-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      createdAt: now,
+      officerEmail: currentUser.Email,
+      officerName: currentUser.Name,
+      site: input.site || currentUser.Site,
+      shift: input.shift || currentUser.Shift || 'Peak',
+      date: input.date || now.slice(0, 10)
+    };
+
+    setActivities((prev) => [newActivity, ...prev]);
+
+    try {
+      const res = await fetch('/api/activities', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ activity: newActivity })
+      });
+      const data = await res.json();
+      if (data?.ok && Array.isArray(data.activities)) {
+        setActivities(data.activities);
+      }
+      return { ok: true, message: 'Activity logged successfully.' };
+    } catch (err: unknown) {
+      console.warn('Failed to save activity to server, kept locally:', err);
+      return { ok: true, message: 'Activity saved locally.' };
+    }
+  };
+
+  const updateActivity = async (id: string, patch: Partial<UserActivity>): Promise<ActionResult> => {
+    setActivities((prev) =>
+      prev.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: new Date().toISOString() } : a))
+    );
+    try {
+      const target = activities.find((a) => a.id === id);
+      if (target) {
+        await fetch('/api/activities', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activity: { ...target, ...patch } })
+        });
+      }
+      return { ok: true, message: 'Activity updated.' };
+    } catch (err: unknown) {
+      return { ok: false, message: 'Could not update activity on server.' };
+    }
+  };
+
+  const deleteActivity = async (id: string): Promise<ActionResult> => {
+    setActivities((prev) => prev.filter((a) => a.id !== id));
+    try {
+      await fetch(`/api/activities/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      return { ok: true, message: 'Activity deleted.' };
+    } catch (err: unknown) {
+      return { ok: true, message: 'Activity deleted locally.' };
+    }
   };
 
   const publishDirection = (feedbackId: string) => {
@@ -1171,7 +1342,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const updateDirection = (
     feedbackId: string,
-    patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged'>>
+    patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged' | 'toSite' | 'toAll'>>
   ): ActionResult => {
     if (!isAdmin) return denyAdmin();
     const found = directions.some((d) => d.feedbackId === feedbackId);
@@ -1321,6 +1492,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         reviewUpload,
         toggleUsedInFinal,
         approveFinalCreative,
+        activities,
+        addActivity,
+        updateActivity,
+        deleteActivity,
         acknowledgeDirection,
         publishDirection,
         addShiftReport,
