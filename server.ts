@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { get as getBlob, put as putBlob } from '@vercel/blob';
 import { mergeDriveRootChildren } from './src/utils/driveDiscovery.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -9,6 +10,8 @@ const __dirname = path.dirname(__filename);
 
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
+const BLOB_STATE_PATH = 'engagement-app/server-state.json';
+const USE_BLOB_STORE = Boolean(process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN);
 
 const ADMIN_EMAIL = 'tanveer@empireonecx.com';
 
@@ -293,67 +296,94 @@ function isLegacyDummyDirection(d: any): boolean {
   return false;
 }
 
+let remoteStoreCache: ServerStore | null = null;
+let remoteWriteQueue: Promise<void> = Promise.resolve();
+
+export function normalizeStore(parsed: any): ServerStore {
+  const peopleList: PersonRecord[] = Array.isArray(parsed?.people)
+    ? structuredClone(parsed.people)
+    : structuredClone(INITIAL_STORE.people);
+  const hasAdmin = peopleList.some((p) => normalizeEmail(p.Email) === ADMIN_EMAIL);
+  if (!hasAdmin) {
+    peopleList.unshift(structuredClone(INITIAL_STORE.people[0]));
+  } else {
+    for (const person of peopleList) {
+      if (normalizeEmail(person.Email) === ADMIN_EMAIL) {
+        person.Role = 'Admin';
+        person.Active = true;
+      }
+    }
+  }
+
+  const rawUploads: any[] = Array.isArray(parsed?.uploads) ? parsed.uploads : INITIAL_STORE.uploads;
+  const rawDirections: any[] = Array.isArray(parsed?.directions) ? parsed.directions : INITIAL_STORE.directions;
+  return {
+    people: peopleList,
+    config: parsed?.config && typeof parsed.config === 'object'
+      ? { ...INITIAL_STORE.config, ...parsed.config }
+      : structuredClone(INITIAL_STORE.config),
+    uploads: rawUploads.filter((upload: any) => !isLegacyDummyUpload(upload)),
+    directions: rawDirections.filter((direction: any) => !isLegacyDummyDirection(direction)),
+    shiftReports: Array.isArray(parsed?.shiftReports) ? parsed.shiftReports : [],
+    activities: Array.isArray(parsed?.activities) ? parsed.activities : [],
+    showCaptureForAdmin: Boolean(parsed?.showCaptureForAdmin),
+    syncHealth: parsed?.syncHealth && typeof parsed.syncHealth === 'object'
+      ? parsed.syncHealth
+      : structuredClone(INITIAL_STORE.syncHealth),
+    clickUpToken: typeof parsed?.clickUpToken === 'string' ? parsed.clickUpToken : '',
+    drivePermissions: Array.isArray(parsed?.drivePermissions) ? parsed.drivePermissions : []
+  };
+}
+
+async function hydrateRemoteStore(): Promise<void> {
+  if (!USE_BLOB_STORE) return;
+  await remoteWriteQueue;
+  const result = await getBlob(BLOB_STATE_PATH, { access: 'private', useCache: false });
+  if (!result) {
+    remoteStoreCache = structuredClone(INITIAL_STORE);
+    await writeStore(remoteStoreCache);
+    return;
+  }
+  const raw = await new Response(result.stream).text();
+  remoteStoreCache = normalizeStore(JSON.parse(raw));
+}
+
 function readStore(): ServerStore {
+  if (USE_BLOB_STORE) {
+    return remoteStoreCache || structuredClone(INITIAL_STORE);
+  }
   try {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
     if (fs.existsSync(DATA_FILE)) {
       const raw = fs.readFileSync(DATA_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      const peopleList: PersonRecord[] = Array.isArray(parsed.people) ? parsed.people : INITIAL_STORE.people;
-      // Guarantee tanveer is present and admin
-      const hasAdmin = peopleList.some((p) => normalizeEmail(p.Email) === ADMIN_EMAIL);
-      if (!hasAdmin) {
-        peopleList.unshift(INITIAL_STORE.people[0]);
-      } else {
-        for (const p of peopleList) {
-          if (normalizeEmail(p.Email) === ADMIN_EMAIL) {
-            p.Role = 'Admin';
-            p.Active = true;
-          }
-        }
-      }
-
-      const rawUploads: any[] = Array.isArray(parsed.uploads) ? parsed.uploads : INITIAL_STORE.uploads;
-      const cleanUploads = rawUploads.filter((u: any) => !isLegacyDummyUpload(u));
-
-      const rawDirections: any[] = Array.isArray(parsed.directions) ? parsed.directions : INITIAL_STORE.directions;
-      const cleanDirections = rawDirections.filter((d: any) => !isLegacyDummyDirection(d));
-
-      const storeResult: ServerStore = {
-        people: peopleList,
-        config: parsed.config && typeof parsed.config === 'object' ? { ...INITIAL_STORE.config, ...parsed.config } : INITIAL_STORE.config,
-        uploads: cleanUploads,
-        directions: cleanDirections,
-        shiftReports: Array.isArray(parsed.shiftReports) ? parsed.shiftReports : INITIAL_STORE.shiftReports,
-        activities: Array.isArray(parsed.activities) ? parsed.activities : [],
-        showCaptureForAdmin: Boolean(parsed.showCaptureForAdmin),
-        syncHealth: parsed.syncHealth && typeof parsed.syncHealth === 'object' ? parsed.syncHealth : INITIAL_STORE.syncHealth,
-        clickUpToken: typeof parsed.clickUpToken === 'string' ? parsed.clickUpToken : '',
-        drivePermissions: Array.isArray(parsed.drivePermissions) ? parsed.drivePermissions : []
-      };
-
-      if (cleanUploads.length !== rawUploads.length || cleanDirections.length !== rawDirections.length) {
-        try {
-          writeStore(storeResult);
-        } catch (e) {
-          console.warn('Could not rewrite cleaned store:', e);
-        }
-      }
-
-      return storeResult;
+      return normalizeStore(JSON.parse(raw));
     }
   } catch (err) {
     console.warn('Failed reading server store, initializing fresh store:', err);
   }
 
   // File doesn't exist yet, create it
-  writeStore(INITIAL_STORE);
-  return INITIAL_STORE;
+  void writeStore(INITIAL_STORE);
+  return structuredClone(INITIAL_STORE);
 }
 
-function writeStore(store: ServerStore): void {
+async function writeStore(store: ServerStore): Promise<void> {
+  if (USE_BLOB_STORE) {
+    remoteStoreCache = structuredClone(store);
+    const serialized = JSON.stringify(remoteStoreCache, null, 2);
+    remoteWriteQueue = remoteWriteQueue.then(async () => {
+      await putBlob(BLOB_STATE_PATH, serialized, {
+        access: 'private',
+        addRandomSuffix: false,
+        allowOverwrite: true,
+        contentType: 'application/json'
+      });
+    });
+    await remoteWriteQueue;
+    return;
+  }
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
   }
@@ -367,6 +397,14 @@ export function createExpressApp(): express.Express {
 
   app.use(express.json({ limit: '50mb' }));
   app.use(express.static(path.resolve(__dirname, 'public')));
+  app.use(async (_req, _res, next) => {
+    try {
+      await hydrateRemoteStore();
+      next();
+    } catch (error) {
+      next(error);
+    }
+  });
 
   // Proxy ClickUp API requests to avoid CORS in browser and proxy through backend
   app.all('/api/clickup/*', async (req, res) => {
@@ -396,18 +434,18 @@ export function createExpressApp(): express.Express {
   });
 
   // Health check endpoint
-  app.get('/api/server/health', (_req, res) => {
+  app.get('/api/server/health', async (_req, res) => {
     res.json({ status: 'ok', uptime: process.uptime(), time: new Date().toISOString() });
   });
 
   // REST API: Get full server state
-  app.get('/api/state', (_req, res) => {
+  app.get('/api/state', async (_req, res) => {
     const store = readStore();
     res.json(store);
   });
 
   // REST API: Ensure session user is recorded on the server
-  app.post('/api/session/ensure-user', (req, res) => {
+  app.post('/api/session/ensure-user', async (req, res) => {
     const { email, name, photoURL } = req.body || {};
     if (!email || typeof email !== 'string') {
       res.status(400).json({ ok: false, message: 'Valid email required' });
@@ -428,7 +466,7 @@ export function createExpressApp(): express.Express {
         Avatar: photoURL || undefined
       };
       store.people.unshift(newPerson);
-      writeStore(store);
+      await writeStore(store);
     } else {
       let changed = false;
       if (key === ADMIN_EMAIL && store.people[existingIndex].Role !== 'Admin') {
@@ -440,14 +478,14 @@ export function createExpressApp(): express.Express {
         store.people[existingIndex].Avatar = photoURL;
         changed = true;
       }
-      if (changed) writeStore(store);
+      if (changed) await writeStore(store);
     }
 
     res.json({ ok: true, people: store.people });
   });
 
   // REST API: Merge and sync roster parsed from Google Sheet
-  app.post('/api/session/sync-sheet-roster', (req, res) => {
+  app.post('/api/session/sync-sheet-roster', async (req, res) => {
     const incoming = req.body?.people;
     if (!Array.isArray(incoming) || incoming.length === 0) {
       res.status(400).json({ ok: false, message: 'Valid people array required' });
@@ -502,7 +540,7 @@ export function createExpressApp(): express.Express {
     }
 
     if (changed) {
-      writeStore(store);
+      await writeStore(store);
     }
 
     res.json({ ok: true, people: store.people, count: store.people.length });
@@ -758,7 +796,7 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Get Drive permissions
-  app.get('/api/drive/permissions', (_req, res) => {
+  app.get('/api/drive/permissions', async (_req, res) => {
     try {
       const store = readStore();
       res.json({ ok: true, permissions: Array.isArray(store.drivePermissions) ? store.drivePermissions : [] });
@@ -842,7 +880,7 @@ export function createExpressApp(): express.Express {
       };
 
       store.drivePermissions.unshift(newGrant);
-      writeStore(store);
+      await writeStore(store);
       res.json({ ok: true, permissions: store.drivePermissions, message: `Access granted for ${newGrant.granteeName || newGrant.granteeValue}.` });
     } catch (err: unknown) {
       console.error('Failed to grant drive permission:', err);
@@ -874,7 +912,7 @@ export function createExpressApp(): express.Express {
       }
       const initialLen = store.drivePermissions.length;
       store.drivePermissions = store.drivePermissions.filter((p) => p && p.id !== id);
-      writeStore(store);
+      await writeStore(store);
       res.json({
         ok: true,
         permissions: store.drivePermissions,
@@ -957,18 +995,18 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Update app configuration
-  app.post('/api/admin/config', (req, res) => {
+  app.post('/api/admin/config', async (req, res) => {
     const store = readStore();
     store.config = {
       ...store.config,
       ...(req.body || {})
     };
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, config: store.config, message: 'Configuration saved to server.' });
   });
 
   // REST API: Add user
-  app.post('/api/admin/users', (req, res) => {
+  app.post('/api/admin/users', async (req, res) => {
     const { email, name, role, site, shift } = req.body || {};
     if (!email || !String(email).includes('@')) {
       res.status(400).json({ ok: false, message: 'Enter a full email address.' });
@@ -990,7 +1028,7 @@ export function createExpressApp(): express.Express {
       Active: true
     };
     store.people.push(newPerson);
-    writeStore(store);
+    await writeStore(store);
 
     res.json({
       ok: true,
@@ -1000,7 +1038,7 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Update user
-  app.put('/api/admin/users/:email', (req, res) => {
+  app.put('/api/admin/users/:email', async (req, res) => {
     const email = req.params.email;
     const patch = req.body || {};
     const store = readStore();
@@ -1021,13 +1059,13 @@ export function createExpressApp(): express.Express {
       Role: isAdminAccount ? 'Admin' : (patch.Role || existing.Role),
       Active: isAdminAccount ? true : (patch.Active !== undefined ? Boolean(patch.Active) : existing.Active)
     };
-    writeStore(store);
+    await writeStore(store);
 
     res.json({ ok: true, people: store.people, message: `Updated ${existing.Email} on the server.` });
   });
 
   // REST API: Remove / Deactivate user
-  app.delete('/api/admin/users/:email', (req, res) => {
+  app.delete('/api/admin/users/:email', async (req, res) => {
     const email = req.params.email;
     const key = normalizeEmail(email);
     if (key === ADMIN_EMAIL) {
@@ -1049,7 +1087,7 @@ export function createExpressApp(): express.Express {
     } else {
       store.people[index].Active = false;
     }
-    writeStore(store);
+    await writeStore(store);
 
     res.json({
       ok: true,
@@ -1059,10 +1097,10 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Capture toggle for admin
-  app.post('/api/admin/capture-toggle', (req, res) => {
+  app.post('/api/admin/capture-toggle', async (req, res) => {
     const store = readStore();
     store.showCaptureForAdmin = Boolean(req.body?.showCaptureForAdmin);
-    writeStore(store);
+    await writeStore(store);
     res.json({
       ok: true,
       showCaptureForAdmin: store.showCaptureForAdmin,
@@ -1073,7 +1111,7 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Update Upload Record
-  app.put('/api/admin/records/upload/:id', (req, res) => {
+  app.put('/api/admin/records/upload/:id', async (req, res) => {
     const { id } = req.params;
     const patch = req.body || {};
     const store = readStore();
@@ -1083,12 +1121,12 @@ export function createExpressApp(): express.Express {
       return;
     }
     store.uploads[index] = { ...store.uploads[index], ...patch };
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, uploads: store.uploads, message: `Updated upload ${id} on the server.` });
   });
 
   // REST API: Delete Single Upload Record
-  app.delete('/api/admin/records/upload/:id', (req, res) => {
+  app.delete('/api/admin/records/upload/:id', async (req, res) => {
     const { id } = req.params;
     const store = readStore();
     const initialLen = store.uploads.length;
@@ -1097,21 +1135,21 @@ export function createExpressApp(): express.Express {
       res.status(404).json({ ok: false, message: 'Upload not found on server.' });
       return;
     }
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, uploads: store.uploads, message: `Deleted upload ${id} from server. Google Drive files were not deleted.` });
   });
 
   // REST API: Delete All Upload Records
-  app.delete('/api/admin/records/uploads', (_req, res) => {
+  app.delete('/api/admin/records/uploads', async (_req, res) => {
     const store = readStore();
     const count = store.uploads.length;
     store.uploads = [];
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, uploads: [], message: `Deleted ${count} upload record(s) from server.` });
   });
 
   // REST API: Update Direction
-  app.put('/api/admin/records/direction/:id', (req, res) => {
+  app.put('/api/admin/records/direction/:id', async (req, res) => {
     const { id } = req.params;
     const patch = req.body || {};
     const store = readStore();
@@ -1121,12 +1159,12 @@ export function createExpressApp(): express.Express {
       return;
     }
     store.directions[index] = { ...store.directions[index], ...patch };
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, directions: store.directions, message: `Updated direction ${id} on the server.` });
   });
 
   // REST API: Delete Single Direction
-  app.delete('/api/admin/records/direction/:id', (req, res) => {
+  app.delete('/api/admin/records/direction/:id', async (req, res) => {
     const { id } = req.params;
     const store = readStore();
     const initialLen = store.directions.length;
@@ -1135,21 +1173,21 @@ export function createExpressApp(): express.Express {
       res.status(404).json({ ok: false, message: 'Direction not found on server.' });
       return;
     }
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, directions: store.directions, message: `Deleted direction ${id} from server.` });
   });
 
   // REST API: Delete All Directions
-  app.delete('/api/admin/records/directions', (_req, res) => {
+  app.delete('/api/admin/records/directions', async (_req, res) => {
     const store = readStore();
     const count = store.directions.length;
     store.directions = [];
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, directions: [], message: `Deleted ${count} direction(s) from server.` });
   });
 
   // REST API: Update Shift Report
-  app.put('/api/admin/records/report/:id', (req, res) => {
+  app.put('/api/admin/records/report/:id', async (req, res) => {
     const { id } = req.params;
     const patch = req.body || {};
     const store = readStore();
@@ -1159,12 +1197,12 @@ export function createExpressApp(): express.Express {
       return;
     }
     store.shiftReports[index] = { ...store.shiftReports[index], ...patch };
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, shiftReports: store.shiftReports, message: `Updated report ${id} on the server.` });
   });
 
   // REST API: Delete Single Shift Report
-  app.delete('/api/admin/records/report/:id', (req, res) => {
+  app.delete('/api/admin/records/report/:id', async (req, res) => {
     const { id } = req.params;
     const store = readStore();
     const initialLen = store.shiftReports.length;
@@ -1173,21 +1211,21 @@ export function createExpressApp(): express.Express {
       res.status(404).json({ ok: false, message: 'Shift report not found on server.' });
       return;
     }
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, shiftReports: store.shiftReports, message: `Deleted report ${id} from server.` });
   });
 
   // REST API: Delete All Shift Reports
-  app.delete('/api/admin/records/reports', (_req, res) => {
+  app.delete('/api/admin/records/reports', async (_req, res) => {
     const store = readStore();
     const count = store.shiftReports.length;
     store.shiftReports = [];
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, shiftReports: [], message: `Deleted ${count} shift report(s) from server.` });
   });
 
   // REST API: Batch Upload Save
-  app.post('/api/uploads/batch', (req, res) => {
+  app.post('/api/uploads/batch', async (req, res) => {
     const { items } = req.body || {};
     if (!Array.isArray(items) || items.length === 0) {
       res.status(400).json({ ok: false, message: 'Items array required' });
@@ -1195,12 +1233,12 @@ export function createExpressApp(): express.Express {
     }
     const store = readStore();
     store.uploads = [...items, ...store.uploads];
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, uploads: store.uploads });
   });
 
   // REST API: Review Upload
-  app.post('/api/uploads/review', (req, res) => {
+  app.post('/api/uploads/review', async (req, res) => {
     const { id, decision, note, reviewedBy } = req.body || {};
     const store = readStore();
     const index = store.uploads.findIndex((u) => u.id === id);
@@ -1213,13 +1251,13 @@ export function createExpressApp(): express.Express {
         reviewedAt: new Date().toISOString(),
         topPick: decision === 'Top pick' ? true : store.uploads[index].topPick
       };
-      writeStore(store);
+      await writeStore(store);
     }
     res.json({ ok: true, uploads: store.uploads });
   });
 
   // REST API: Toggle Used In Final / Creative Approval
-  app.post('/api/uploads/toggle-final', (req, res) => {
+  app.post('/api/uploads/toggle-final', async (req, res) => {
     const { id, usedInFinal, creativeApprovedBy, creativeApprovedAt } = req.body || {};
     const store = readStore();
     const index = store.uploads.findIndex((u) => u.id === id);
@@ -1232,13 +1270,13 @@ export function createExpressApp(): express.Express {
         creativeApprovedBy: targetUsed ? (creativeApprovedBy || current.creativeApprovedBy) : undefined,
         creativeApprovedAt: targetUsed ? (creativeApprovedAt || new Date().toISOString()) : undefined
       };
-      writeStore(store);
+      await writeStore(store);
     }
     res.json({ ok: true, uploads: store.uploads });
   });
 
   // REST API: Create Shift Report
-  app.post('/api/reports', (req, res) => {
+  app.post('/api/reports', async (req, res) => {
     const { report } = req.body || {};
     if (!report || !report.reportId) {
       res.status(400).json({ ok: false, message: 'Valid report object required' });
@@ -1246,12 +1284,12 @@ export function createExpressApp(): express.Express {
     }
     const store = readStore();
     store.shiftReports = [report, ...store.shiftReports];
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, shiftReports: store.shiftReports });
   });
 
   // REST API: Sign off report
-  app.post('/api/reports/sign-off', (req, res) => {
+  app.post('/api/reports/sign-off', async (req, res) => {
     const { reportId } = req.body || {};
     const store = readStore();
     const index = store.shiftReports.findIndex((r) => r.reportId === reportId);
@@ -1261,13 +1299,13 @@ export function createExpressApp(): express.Express {
         signedOff: true,
         verified: true
       };
-      writeStore(store);
+      await writeStore(store);
     }
     res.json({ ok: true, shiftReports: store.shiftReports });
   });
 
   // REST API: Acknowledge Direction
-  app.post('/api/directions/acknowledge', (req, res) => {
+  app.post('/api/directions/acknowledge', async (req, res) => {
     const { feedbackId, email, reply, direction } = req.body || {};
     const store = readStore();
     const index = store.directions.findIndex((d) => d.feedbackId === feedbackId);
@@ -1280,7 +1318,7 @@ export function createExpressApp(): express.Express {
         acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
         reply: reply || store.directions[index].reply
       };
-      writeStore(store);
+      await writeStore(store);
     } else if (direction && feedbackId) {
       const prevAck = direction.acknowledgedBy || [];
       store.directions.unshift({
@@ -1290,7 +1328,7 @@ export function createExpressApp(): express.Express {
         acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
         reply: reply || direction.reply || ''
       });
-      writeStore(store);
+      await writeStore(store);
     } else if (feedbackId) {
       store.directions.unshift({
         feedbackId,
@@ -1307,18 +1345,18 @@ export function createExpressApp(): express.Express {
         sentAt: new Date().toISOString(),
         status: 'Published'
       } as any);
-      writeStore(store);
+      await writeStore(store);
     }
     res.json({ ok: true, directions: store.directions });
   });
 
   // REST API: User Activities CRUD
-  app.get('/api/activities', (_req, res) => {
+  app.get('/api/activities', async (_req, res) => {
     const store = readStore();
     res.json({ ok: true, activities: store.activities || [] });
   });
 
-  app.post('/api/activities', (req, res) => {
+  app.post('/api/activities', async (req, res) => {
     const { activity } = req.body || {};
     if (!activity || !activity.id) {
       res.status(400).json({ ok: false, message: 'Activity with id required' });
@@ -1332,21 +1370,21 @@ export function createExpressApp(): express.Express {
     } else {
       store.activities = [activity, ...store.activities];
     }
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, activities: store.activities });
   });
 
-  app.delete('/api/activities/:id', (req, res) => {
+  app.delete('/api/activities/:id', async (req, res) => {
     const { id } = req.params;
     const store = readStore();
     if (!Array.isArray(store.activities)) store.activities = [];
     store.activities = store.activities.filter((a) => a.id !== id);
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, activities: store.activities });
   });
 
   // REST API: Publish Direction
-  app.post('/api/directions/publish', (req, res) => {
+  app.post('/api/directions/publish', async (req, res) => {
     const { feedbackId } = req.body || {};
     const store = readStore();
     const index = store.directions.findIndex((d) => d.feedbackId === feedbackId);
@@ -1356,23 +1394,23 @@ export function createExpressApp(): express.Express {
         status: 'Published',
         sentAt: new Date().toISOString()
       };
-      writeStore(store);
+      await writeStore(store);
     }
     res.json({ ok: true, directions: store.directions });
   });
 
   // REST API: ClickUp token storage on server
-  app.post('/api/config/clickup-token', (req, res) => {
+  app.post('/api/config/clickup-token', async (req, res) => {
     const { token } = req.body || {};
     const store = readStore();
     store.clickUpToken = (token && String(token).trim()) || '';
-    writeStore(store);
+    await writeStore(store);
     res.json({ ok: true, clickUpToken: store.clickUpToken, message: 'ClickUp token saved to server.' });
   });
 
   // REST API: Reset to initial sample / clean data
-  app.post('/api/admin/reset-sample', (_req, res) => {
-    writeStore(INITIAL_STORE);
+  app.post('/api/admin/reset-sample', async (_req, res) => {
+    await writeStore(INITIAL_STORE);
     res.json({ ok: true, store: INITIAL_STORE, message: 'Server reset to initial state.' });
   });
 

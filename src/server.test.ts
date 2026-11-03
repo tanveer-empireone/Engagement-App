@@ -2,7 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
-import { createGoogleDriveReaderPermission, deleteGoogleDrivePermission, markGoogleDriveItemForApp } from '../server.ts';
+import {
+  createGoogleDriveReaderPermission,
+  deleteGoogleDrivePermission,
+  markGoogleDriveItemForApp,
+  normalizeStore
+} from '../server.ts';
 import { mergeDriveRootChildren } from './utils/driveDiscovery.ts';
 
 test('directly shared folders are discovered only inside the configured Drive root', () => {
@@ -54,6 +59,27 @@ test('Google Drive permission helpers call the real permissions API', async () =
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('server store hydration preserves durable Drive permission grants', () => {
+  const permission = {
+    id: 'permission-record-123',
+    targetType: 'folder' as const,
+    targetId: 'drive-folder-456',
+    targetName: 'Cebu City',
+    granteeType: 'user' as const,
+    granteeValue: 'info@empireonecx.com',
+    granteeName: 'EmpireOne CX',
+    grantedBy: 'tanveer@empireonecx.com',
+    grantedAt: '2026-11-04T00:00:00.000Z',
+    googlePermissions: [{ email: 'info@empireonecx.com', permissionId: 'google-permission-789' }]
+  };
+
+  const store = normalizeStore({ drivePermissions: [permission] });
+
+  assert.deepEqual(store.drivePermissions, [permission]);
+  assert.equal(store.people[0].Email, 'tanveer@empireonecx.com');
+  assert.equal(store.people[0].Role, 'Admin');
 });
 
 test('server data persistence store maintains integrity', () => {
