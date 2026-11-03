@@ -3,9 +3,16 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { BlobPreconditionFailedError, get as getBlob, put as putBlob } from '@vercel/blob';
-import { handleUpload } from '@vercel/blob/client';
+import { get as getBlob } from '@vercel/blob';
 import { mergeDriveRootChildren } from './src/utils/driveDiscovery.ts';
+import {
+  createGoogleDriveUploadSession,
+  fetchGoogleDriveMedia,
+  isGoogleWorkspaceStorageConfigured,
+  loadStoreFromGoogleSheets,
+  saveStoreToGoogleSheets,
+  uploadBufferToGoogleDrive
+} from './src/server/googleWorkspaceStorage.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -14,7 +21,8 @@ const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(_
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
 const LOCAL_MEDIA_DIR = path.join(DATA_DIR, 'media');
 const BLOB_STATE_PATH = 'engagement-app/server-state.json';
-const USE_BLOB_STORE = Boolean(process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN);
+const USE_GOOGLE_WORKSPACE_STORE = isGoogleWorkspaceStorageConfigured();
+const CAN_READ_LEGACY_BLOB = Boolean(process.env.BLOB_READ_WRITE_TOKEN);
 
 const ADMIN_EMAIL = 'tanveer@empireonecx.com';
 
@@ -193,6 +201,15 @@ function getBearerToken(authorization: string | undefined): string {
   return match?.[1]?.trim() || '';
 }
 
+async function getGoogleTokenEmail(token: string): Promise<string> {
+  const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.email) throw new Error('Your Google session could not be verified. Sign in again.');
+  return normalizeEmail(data.email);
+}
+
 function getGrantEmails(store: ServerStore, granteeType: string, granteeValue: string): string[] {
   const value = String(granteeValue || '').trim();
   if (granteeType === 'user') return value.includes('@') ? [normalizeEmail(value)] : [];
@@ -313,8 +330,6 @@ function appendSyncLog(store: ServerStore, stage: string, state: 'OK' | 'Error' 
 
 let remoteStoreCache: ServerStore | null = null;
 let remoteWriteQueue: Promise<void> = Promise.resolve();
-let remoteStoreEtag: string | null = null;
-const remoteStoreVersions = new WeakMap<ServerStore, string | null>();
 
 export function normalizeStore(parsed: any): ServerStore {
   const peopleList: PersonRecord[] = Array.isArray(parsed?.people)
@@ -354,28 +369,59 @@ export function normalizeStore(parsed: any): ServerStore {
   };
 }
 
+async function migrateLegacyMediaToDrive(store: ServerStore): Promise<void> {
+  if (!CAN_READ_LEGACY_BLOB) return;
+  for (const upload of store.uploads) {
+    const mediaUrl = String(upload?.mediaUrl || '');
+    if (!mediaUrl.includes('/api/media/content?')) continue;
+    const pathname = new URL(mediaUrl, 'https://engagement.local').searchParams.get('path') || '';
+    if (!pathname.startsWith('engagement-app/media/')) continue;
+    try {
+      const legacy = await getBlob(pathname, { access: 'private', useCache: false });
+      if (!legacy) continue;
+      const bytes = Buffer.from(await new Response(legacy.stream).arrayBuffer());
+      const migrated = await uploadBufferToGoogleDrive({
+        fileName: String(upload.fileName || path.basename(pathname)),
+        mimeType: legacy.blob.contentType || (upload.mediaType === 'Video' ? 'video/mp4' : 'image/jpeg'),
+        bytes,
+        parentFolderId: store.config.driveRootId
+      });
+      upload.mediaUrl = `/api/media/content?driveFileId=${encodeURIComponent(migrated.id)}`;
+    } catch (error) {
+      console.warn(`Could not migrate legacy media ${pathname} to Google Drive:`, error);
+    }
+  }
+}
+
 async function hydrateRemoteStore(): Promise<void> {
-  if (!USE_BLOB_STORE) return;
+  if (!USE_GOOGLE_WORKSPACE_STORE) return;
   await remoteWriteQueue.catch(() => undefined);
-  const result = await getBlob(BLOB_STATE_PATH, { access: 'private', useCache: false });
-  if (!result) {
-    remoteStoreCache = structuredClone(INITIAL_STORE);
-    remoteStoreVersions.set(remoteStoreCache, null);
-    await writeStore(remoteStoreCache);
+  const loaded = await loadStoreFromGoogleSheets(normalizeStore, INITIAL_STORE);
+  if (loaded.initialized) {
+    remoteStoreCache = loaded.store;
     return;
   }
-  const raw = await new Response(result.stream).text();
-  remoteStoreCache = normalizeStore(JSON.parse(raw));
-  remoteStoreEtag = result.blob.etag;
-  remoteStoreVersions.set(remoteStoreCache, remoteStoreEtag);
+
+  // Preserve the existing production state on the first Sheets-backed deployment.
+  let initial = structuredClone(INITIAL_STORE);
+  if (CAN_READ_LEGACY_BLOB) {
+    const legacy = await getBlob(BLOB_STATE_PATH, { access: 'private', useCache: false });
+    if (legacy) {
+      initial = normalizeStore(JSON.parse(await new Response(legacy.stream).text()));
+    }
+  }
+  initial.clickUpToken = process.env.CLICKUP_API_TOKEN || '';
+  await migrateLegacyMediaToDrive(initial);
+  await saveStoreToGoogleSheets(initial);
+  remoteStoreCache = initial;
 }
 
 function readStore(): ServerStore {
-  if (process.env.VERCEL && !USE_BLOB_STORE) {
-    throw new Error('Persistent storage is unavailable: BLOB_READ_WRITE_TOKEN is not configured.');
+  if (process.env.VERCEL && !USE_GOOGLE_WORKSPACE_STORE) {
+    throw new Error('Persistent storage is unavailable: Google Sheets storage is not configured.');
   }
-  if (USE_BLOB_STORE) {
-    return remoteStoreCache || structuredClone(INITIAL_STORE);
+  if (USE_GOOGLE_WORKSPACE_STORE) {
+    return structuredClone(remoteStoreCache || INITIAL_STORE);
   }
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -395,34 +441,14 @@ function readStore(): ServerStore {
 }
 
 async function writeStore(store: ServerStore): Promise<void> {
-  if (process.env.VERCEL && !USE_BLOB_STORE) {
-    throw new Error('Persistent storage is unavailable: BLOB_READ_WRITE_TOKEN is not configured.');
+  if (process.env.VERCEL && !USE_GOOGLE_WORKSPACE_STORE) {
+    throw new Error('Persistent storage is unavailable: Google Sheets storage is not configured.');
   }
-  if (USE_BLOB_STORE) {
-    const expectedEtag = remoteStoreVersions.has(store) ? remoteStoreVersions.get(store)! : remoteStoreEtag;
+  if (USE_GOOGLE_WORKSPACE_STORE) {
     const pendingStore = structuredClone(store);
-    remoteStoreCache = pendingStore;
-    remoteStoreVersions.set(pendingStore, expectedEtag);
-    const serialized = JSON.stringify(pendingStore, null, 2);
     remoteWriteQueue = remoteWriteQueue.catch(() => undefined).then(async () => {
-      try {
-        const result = await putBlob(BLOB_STATE_PATH, serialized, {
-          access: 'private',
-          addRandomSuffix: false,
-          allowOverwrite: true,
-          ...(expectedEtag ? { ifMatch: expectedEtag } : {}),
-          contentType: 'application/json'
-        });
-        remoteStoreEtag = result.etag;
-        remoteStoreVersions.set(pendingStore, result.etag);
-      } catch (error) {
-        if (error instanceof BlobPreconditionFailedError) {
-          remoteStoreCache = null;
-          remoteStoreEtag = null;
-          throw new Error('Server data changed during this save. Refresh and try again.');
-        }
-        throw error;
-      }
+      await saveStoreToGoogleSheets(pendingStore);
+      remoteStoreCache = pendingStore;
     });
     await remoteWriteQueue;
     return;
@@ -478,37 +504,55 @@ export function createExpressApp(): express.Express {
 
   // Health check endpoint
   app.get('/api/server/health', async (_req, res) => {
-    const storage = USE_BLOB_STORE ? 'vercel-blob' : process.env.VERCEL ? 'misconfigured' : 'local-disk';
+    const storage = USE_GOOGLE_WORKSPACE_STORE ? 'google-sheets-drive' : process.env.VERCEL ? 'misconfigured' : 'local-disk';
+    const legacyMediaCount = (remoteStoreCache?.uploads || []).filter((upload) =>
+      String(upload?.mediaUrl || '').includes('/api/media/content?path=')
+    ).length;
     res.status(storage === 'misconfigured' ? 503 : 200).json({
       status: storage === 'misconfigured' ? 'error' : 'ok',
       storage,
+      legacyMediaCount,
       uptime: process.uptime(),
       time: new Date().toISOString()
     });
   });
 
-  app.post('/api/media/upload-token', async (req, res) => {
-    if (!USE_BLOB_STORE) {
-      res.status(503).json({ ok: false, message: 'Private media uploads require Vercel Blob storage.' });
+  app.post('/api/media/upload-session', async (req, res) => {
+    if (!USE_GOOGLE_WORKSPACE_STORE) {
+      res.status(503).json({ ok: false, message: 'Google Drive uploads are not configured.' });
       return;
     }
     try {
-      const result = await handleUpload({
-        request: req,
-        body: req.body,
-        onBeforeGenerateToken: async (pathname) => {
-          if (!pathname.startsWith('engagement-app/media/')) {
-            throw new Error('Invalid media upload path.');
-          }
-          return {
-            allowedContentTypes: ['image/*', 'video/*'],
-            maximumSizeInBytes: 35 * 1024 * 1024,
-            addRandomSuffix: true,
-            allowOverwrite: false
-          };
-        }
+      const userToken = getBearerToken(req.headers.authorization);
+      if (!userToken) {
+        res.status(401).json({ ok: false, message: 'Google sign-in is required to upload media.' });
+        return;
+      }
+      const userEmail = await getGoogleTokenEmail(userToken);
+      const store = readStore();
+      const uploader = store.people.find((person) => normalizeEmail(person.Email) === userEmail && person.Active);
+      if (!uploader) {
+        res.status(403).json({ ok: false, message: 'Your account is not active in the engagement roster.' });
+        return;
+      }
+      const fileName = String(req.body?.fileName || '').replace(/[^a-zA-Z0-9._ -]+/g, '-').slice(-160);
+      const mimeType = String(req.body?.mimeType || 'application/octet-stream');
+      const size = Number(req.body?.size || 0);
+      if (!fileName || !Number.isFinite(size) || size <= 0 || size > 35 * 1024 * 1024) {
+        res.status(400).json({ ok: false, message: 'A valid file name and size up to 35 MB are required.' });
+        return;
+      }
+      if (!mimeType.startsWith('image/') && !mimeType.startsWith('video/')) {
+        res.status(400).json({ ok: false, message: 'Only image and video uploads are supported.' });
+        return;
+      }
+      const result = await createGoogleDriveUploadSession({
+        fileName,
+        mimeType,
+        size,
+        parentFolderId: store.config.driveRootId
       });
-      res.json(result);
+      res.json({ ok: true, ...result });
     } catch (error) {
       res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) });
     }
@@ -534,13 +578,27 @@ export function createExpressApp(): express.Express {
   });
 
   app.get('/api/media/content', async (req, res) => {
+    const driveFileId = String(req.query.driveFileId || '');
     const pathname = String(req.query.path || '');
-    if (!pathname.startsWith('engagement-app/media/')) {
-      res.status(400).json({ ok: false, message: 'Invalid media path.' });
+    if (!driveFileId && !pathname.startsWith('engagement-app/media/')) {
+      res.status(400).json({ ok: false, message: 'A valid Drive file ID or legacy media path is required.' });
       return;
     }
     try {
-      if (USE_BLOB_STORE) {
+      if (driveFileId) {
+        const response = await fetchGoogleDriveMedia(driveFileId);
+        if (!response.ok || !response.body) {
+          res.status(response.status === 404 ? 404 : 502).end();
+          return;
+        }
+        res.setHeader('Content-Type', response.headers.get('content-type') || 'application/octet-stream');
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        const bytes = Buffer.from(await response.arrayBuffer());
+        res.send(bytes);
+        return;
+      }
+      // Temporary read compatibility for media created before the Drive migration.
+      if (CAN_READ_LEGACY_BLOB) {
         const result = await getBlob(pathname, { access: 'private' });
         if (!result || result.statusCode !== 200) {
           res.status(404).end();
@@ -1558,6 +1616,13 @@ export function createExpressApp(): express.Express {
 
   // REST API: ClickUp token storage on server
   app.post('/api/config/clickup-token', async (req, res) => {
+    if (USE_GOOGLE_WORKSPACE_STORE) {
+      res.status(400).json({
+        ok: false,
+        message: 'ClickUp credentials must be saved as CLICKUP_API_TOKEN in Vercel, not in Google Sheets.'
+      });
+      return;
+    }
     const { token } = req.body || {};
     const store = readStore();
     store.clickUpToken = (token && String(token).trim()) || '';

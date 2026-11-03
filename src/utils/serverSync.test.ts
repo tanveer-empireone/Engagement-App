@@ -9,7 +9,7 @@ test('open sessions pick up role changes and revocation on the next poll', async
   let roster: Person[] = [{ Email: 'user@example.com', Name: 'User', Role: 'Director', Site: 'Cebu City', Active: true }];
   let nextPoll: (() => void) | undefined;
   t.mock.method(globalThis, 'setTimeout', (fn: () => void, delay: number) => {
-    assert.equal(delay, 5000);
+    assert.equal(delay, 15000);
     nextPoll = fn;
     return 1;
   });

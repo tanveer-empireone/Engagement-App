@@ -31,7 +31,7 @@ const QUICK_TOPICS = [
 ];
 
 export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onNavigateToLibrary }) => {
-  const { currentUser, sites, topics, addBatchUploads, getTopPickRoom } = useSignedInApp();
+  const { currentUser, googleToken, sites, topics, addBatchUploads, getTopPickRoom } = useSignedInApp();
 
   // Smart defaults with rotating shift support!
   const [site] = useState<string>(currentUser.Site || sites[0].SiteName);
@@ -110,16 +110,35 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
       for (const staged of pending) {
         const safeName = staged.name.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-120) || 'media.bin';
         if (import.meta.env.PROD) {
-          const { upload } = await import('@vercel/blob/client');
-          const blob = await upload(`engagement-app/media/${Date.now()}-${safeName}`, staged.file, {
-            access: 'private',
-            handleUploadUrl: '/api/media/upload-token',
-            contentType: staged.type || 'application/octet-stream',
-            multipart: staged.size > 4 * 1024 * 1024
+          const sessionResponse = await fetch('/api/media/upload-session', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Accept: 'application/json',
+              ...(googleToken ? { Authorization: `Bearer ${googleToken}` } : {})
+            },
+            body: JSON.stringify({
+              fileName: `${Date.now()}-${safeName}`,
+              mimeType: staged.type || 'application/octet-stream',
+              size: staged.size
+            })
           });
+          const session = await sessionResponse.json().catch(() => null);
+          if (!sessionResponse.ok || !session?.uploadUrl) {
+            throw new Error(session?.message || `Could not start Google Drive upload (HTTP ${sessionResponse.status}).`);
+          }
+          const driveResponse = await fetch(session.uploadUrl, {
+            method: 'PUT',
+            headers: { 'Content-Type': staged.type || 'application/octet-stream' },
+            body: staged.file
+          });
+          const driveFile = await driveResponse.json().catch(() => null);
+          if (!driveResponse.ok || !driveFile?.id) {
+            throw new Error(driveFile?.error?.message || `Google Drive upload failed (HTTP ${driveResponse.status}).`);
+          }
           durableMedia.push({
             staged,
-            mediaUrl: `/api/media/content?path=${encodeURIComponent(blob.pathname)}`
+            mediaUrl: `/api/media/content?driveFileId=${encodeURIComponent(driveFile.id)}`
           });
         } else {
           const response = await fetch(`/api/media/upload-local?filename=${encodeURIComponent(safeName)}`, {

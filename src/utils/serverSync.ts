@@ -4,7 +4,7 @@ export function subscribeServerState<T>(
   onError: (error: unknown) => void,
   events: EventTarget = window,
   visibility: EventTarget = document,
-  intervalMs = 5000
+  intervalMs = 15000
 ): () => void {
   let stopped = false;
   let initial = true;
