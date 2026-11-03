@@ -443,33 +443,52 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             </div>
           </div>
 
-          {/* User Profile (Mobile) */}
-          <div ref={mobileMenuRef}>
-            <ProfileMenu
-              open={menuOpen}
-              compact
-              isAdmin={isAdmin}
-              name={currentUser.Name}
-              role={currentUser.Role}
-              site={currentUser.Site}
-              avatar={currentUser.Avatar}
-              onToggle={() => setMenuOpen((open) => !open)}
-              onAdmin={openAdmin}
-              onAdminDrive={() => setActiveTab('library')}
-              onSignOut={signOut}
-            />
+          {/* Quick Capture (Mobile) + User Profile (Mobile) */}
+          <div className="flex items-center gap-2">
+            {canUseCapture && (
+              <button
+                type="button"
+                data-testid="mobile-quick-snap"
+                onClick={() => setActiveTab('capture')}
+                title="Capture Media"
+                className={`p-1.5 rounded-xl border transition cursor-pointer flex items-center justify-center ${
+                  activeTab === 'capture'
+                    ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                    : 'bg-white/90 text-indigo-600 border-indigo-100 hover:bg-indigo-50 shadow-2xs'
+                }`}
+              >
+                <Camera className="w-4 h-4" />
+              </button>
+            )}
+
+            <div ref={mobileMenuRef}>
+              <ProfileMenu
+                open={menuOpen}
+                compact
+                isAdmin={isAdmin}
+                name={currentUser.Name}
+                role={currentUser.Role}
+                site={currentUser.Site}
+                avatar={currentUser.Avatar}
+                onToggle={() => setMenuOpen((open) => !open)}
+                onAdmin={openAdmin}
+                onAdminDrive={() => setActiveTab('library')}
+                onSignOut={signOut}
+              />
+            </div>
           </div>
         </div>
       </header>
 
       {/* ========================================================
           MOBILE BOTTOM THUMB BAR (Hidden on Desktop & Tablet: md:hidden)
+          Exactly Four Fixed Tabs: Today, Activities, Library, EOD
           ======================================================== */}
       <nav
         aria-label="Mobile Bottom Navigation"
         className="fixed bottom-0 inset-x-0 z-40 glass-nav border-t border-white/80 shadow-lg md:hidden"
       >
-        <div className={`grid items-center h-16 max-w-md mx-auto px-2 ${canUseCapture ? 'grid-cols-4' : 'grid-cols-3'}`}>
+        <div className="grid grid-cols-4 items-center h-16 max-w-md mx-auto px-2">
           {/* Tab 1: Today */}
           <button
             data-tab="mobile-today"
@@ -479,7 +498,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             }`}
           >
             <Calendar className="w-5 h-5" />
-            <span className="text-[10px] mt-1">Today</span>
+            <span className="text-[10px] mt-1 font-medium">Today</span>
           </button>
 
           {/* Tab 2: Activities */}
@@ -491,29 +510,8 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             }`}
           >
             <ClipboardList className="w-5 h-5" />
-            <span className="text-[10px] mt-1">Activities</span>
+            <span className="text-[10px] mt-1 font-medium">Activities</span>
           </button>
-
-          {canUseCapture && (
-          <button
-            data-tab="mobile-capture"
-            onClick={() => setActiveTab('capture')}
-            className={`flex flex-col items-center justify-center h-full cursor-pointer transition ${
-              activeTab === 'capture' ? 'text-indigo-600 font-semibold' : 'text-slate-400 hover:text-slate-600'
-            }`}
-          >
-            <div
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition shadow-xs ${
-                activeTab === 'capture'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-indigo-50 text-indigo-600'
-              }`}
-            >
-              <Camera className="w-4 h-4" />
-            </div>
-            <span className="text-[10px] mt-0.5">Capture</span>
-          </button>
-          )}
 
           {/* Tab 3: Library */}
           <button
@@ -524,7 +522,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             }`}
           >
             <Grid className="w-5 h-5" />
-            <span className="text-[10px] mt-1">Library</span>
+            <span className="text-[10px] mt-1 font-medium">Library</span>
           </button>
 
           {/* Tab 4: EOD Report */}
@@ -536,7 +534,7 @@ export const Header: React.FC<HeaderProps> = ({ activeTab, setActiveTab }) => {
             }`}
           >
             <FileText className="w-5 h-5" />
-            <span className="text-[10px] mt-1">EOD</span>
+            <span className="text-[10px] mt-1 font-medium">EOD</span>
           </button>
         </div>
       </nav>
