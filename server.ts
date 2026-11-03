@@ -610,69 +610,85 @@ export function createExpressApp(): express.Express {
 
   // REST API: Get Drive permissions
   app.get('/api/drive/permissions', (_req, res) => {
-    const store = readStore();
-    res.json({ ok: true, permissions: store.drivePermissions || [] });
+    try {
+      const store = readStore();
+      res.json({ ok: true, permissions: Array.isArray(store.drivePermissions) ? store.drivePermissions : [] });
+    } catch (err: unknown) {
+      console.error('Failed to get drive permissions:', err);
+      res.status(500).json({ ok: false, permissions: [], message: 'Server error retrieving permissions.' });
+    }
   });
 
   // REST API: Grant Drive permission (Admin only)
   app.post('/api/drive/permissions', (req, res) => {
-    const { targetType, targetId, targetName, granteeType, granteeValue, granteeName, grantedBy } = req.body || {};
-    if (!targetType || !targetId || !granteeType || !granteeValue) {
-      res.status(400).json({ ok: false, message: 'Missing targetType, targetId, granteeType, or granteeValue' });
-      return;
+    try {
+      const { targetType, targetId, targetName, granteeType, granteeValue, granteeName, grantedBy } = req.body || {};
+      if (!targetType || !targetId || !granteeType || !granteeValue) {
+        res.status(400).json({ ok: false, message: 'Missing targetType, targetId, granteeType, or granteeValue' });
+        return;
+      }
+
+      const store = readStore();
+      if (!Array.isArray(store.drivePermissions)) {
+        store.drivePermissions = [];
+      }
+
+      // Safe duplicate check
+      const cleanGrantee = String(granteeValue || '').trim().toLowerCase();
+      const exists = store.drivePermissions.some(
+        (p) =>
+          p.targetType === targetType &&
+          String(p.targetId) === String(targetId) &&
+          p.granteeType === granteeType &&
+          String(p.granteeValue || '').trim().toLowerCase() === cleanGrantee
+      );
+
+      if (exists) {
+        res.json({ ok: true, permissions: store.drivePermissions, message: 'Permission already granted.' });
+        return;
+      }
+
+      const newGrant: DrivePermissionGrant = {
+        id: `perm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+        targetType,
+        targetId: String(targetId),
+        targetName: String(targetName || targetId),
+        granteeType,
+        granteeValue: String(granteeValue).trim(),
+        granteeName: granteeName ? String(granteeName).trim() : undefined,
+        grantedBy: grantedBy ? String(grantedBy).trim() : ADMIN_EMAIL,
+        grantedAt: new Date().toISOString()
+      };
+
+      store.drivePermissions.unshift(newGrant);
+      writeStore(store);
+      res.json({ ok: true, permissions: store.drivePermissions, message: `Access granted for ${newGrant.granteeName || newGrant.granteeValue}.` });
+    } catch (err: unknown) {
+      console.error('Failed to grant drive permission:', err);
+      res.status(500).json({ ok: false, message: `Server error: ${err instanceof Error ? err.message : String(err)}` });
     }
-
-    const store = readStore();
-    if (!Array.isArray(store.drivePermissions)) {
-      store.drivePermissions = [];
-    }
-
-    // Check duplicate
-    const exists = store.drivePermissions.some(
-      (p) =>
-        p.targetType === targetType &&
-        p.targetId === targetId &&
-        p.granteeType === granteeType &&
-        p.granteeValue.toLowerCase() === String(granteeValue).toLowerCase()
-    );
-
-    if (exists) {
-      res.json({ ok: true, permissions: store.drivePermissions, message: 'Permission already granted.' });
-      return;
-    }
-
-    const newGrant: DrivePermissionGrant = {
-      id: `perm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
-      targetType,
-      targetId: String(targetId),
-      targetName: String(targetName || targetId),
-      granteeType,
-      granteeValue: String(granteeValue).trim(),
-      granteeName: granteeName ? String(granteeName).trim() : undefined,
-      grantedBy: grantedBy ? String(grantedBy).trim() : ADMIN_EMAIL,
-      grantedAt: new Date().toISOString()
-    };
-
-    store.drivePermissions.unshift(newGrant);
-    writeStore(store);
-    res.json({ ok: true, permissions: store.drivePermissions, message: `Access granted for ${newGrant.granteeValue}.` });
   });
 
   // REST API: Revoke Drive permission
   app.delete('/api/drive/permissions/:id', (req, res) => {
-    const { id } = req.params;
-    const store = readStore();
-    if (!Array.isArray(store.drivePermissions)) {
-      store.drivePermissions = [];
+    try {
+      const { id } = req.params;
+      const store = readStore();
+      if (!Array.isArray(store.drivePermissions)) {
+        store.drivePermissions = [];
+      }
+      const initialLen = store.drivePermissions.length;
+      store.drivePermissions = store.drivePermissions.filter((p) => p && p.id !== id);
+      writeStore(store);
+      res.json({
+        ok: true,
+        permissions: store.drivePermissions,
+        message: store.drivePermissions.length < initialLen ? 'Permission revoked.' : 'Permission not found.'
+      });
+    } catch (err: unknown) {
+      console.error('Failed to revoke drive permission:', err);
+      res.status(500).json({ ok: false, message: `Server error: ${err instanceof Error ? err.message : String(err)}` });
     }
-    const initialLen = store.drivePermissions.length;
-    store.drivePermissions = store.drivePermissions.filter((p) => p.id !== id);
-    writeStore(store);
-    res.json({
-      ok: true,
-      permissions: store.drivePermissions,
-      message: store.drivePermissions.length < initialLen ? 'Permission revoked.' : 'Permission not found.'
-    });
   });
 
   // REST API: Proxy Google Sheets append row

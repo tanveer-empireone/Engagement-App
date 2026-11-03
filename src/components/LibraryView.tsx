@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useSignedInApp } from '../context/AppContext';
-import { UploadItem, DrivePermissionGrant } from '../types';
+import { DrivePermissionGrant } from '../types';
 import {
   fetchDriveTreeWithImages,
   DriveTreeResult,
@@ -10,39 +10,26 @@ import {
 import { getAccessToken } from '../services/googleAuth';
 import {
   Search,
-  Star,
-  MapPin,
   ExternalLink,
   X,
-  Camera,
-  Filter,
-  RotateCcw,
-  Sparkles,
-  Video,
-  CheckCircle2,
-  User,
   HardDrive,
   Folder,
   FolderOpen,
   Image as ImageIcon,
   Share2,
   UserPlus,
-  ShieldCheck,
   Lock,
-  Unlock,
   Trash2,
   RefreshCw,
   Eye,
   ChevronDown,
   ChevronRight,
-  Maximize2,
-  FileText
+  Maximize2
 } from 'lucide-react';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 export const LibraryView: React.FC = () => {
   const {
-    uploads,
     sites,
     people,
     currentUser,
@@ -58,9 +45,6 @@ export const LibraryView: React.FC = () => {
     revokeDrivePermission,
     canUserAccessDriveItem
   } = useSignedInApp();
-
-  // Top-level Media Library view mode: Drive folders vs Shift submissions
-  const [viewMode, setViewMode] = useState<'drive' | 'submissions'>('drive');
 
   // Google Drive Explorer state
   const [isDriveLoading, setIsDriveLoading] = useState<boolean>(false);
@@ -80,14 +64,6 @@ export const LibraryView: React.FC = () => {
   const [shareGranteeName, setShareGranteeName] = useState<string>('');
   const [shareNotice, setShareNotice] = useState<{ ok: boolean; message: string } | null>(null);
   const [isGranting, setIsGranting] = useState<boolean>(false);
-
-  // Shift Submissions Filters state
-  const [subTab, setSubTab] = useState<'all' | 'top' | 'creative'>('all');
-  const [subSearch, setSubSearch] = useState<string>('');
-  const [selectedSite, setSelectedSite] = useState<string>('all');
-  const [selectedTopic, setSelectedTopic] = useState<string>('all');
-  const [selectedOfficer, setSelectedOfficer] = useState<string>('all');
-  const [selectedSubmission, setSelectedSubmission] = useState<UploadItem | null>(null);
 
   // Fetch live Google Drive tree
   const loadDriveTree = async () => {
@@ -122,10 +98,10 @@ export const LibraryView: React.FC = () => {
   };
 
   useEffect(() => {
-    if (viewMode === 'drive' && (isGoogleConnected || googleToken)) {
+    if (isGoogleConnected || googleToken) {
       void loadDriveTree();
     }
-  }, [viewMode, isGoogleConnected, googleToken]);
+  }, [isGoogleConnected, googleToken]);
 
   // Open Sharing modal targeted to a specific folder or file
   const openShareModal = (targetType: 'all' | 'folder' | 'file', targetId?: string, targetName?: string) => {
@@ -137,7 +113,8 @@ export const LibraryView: React.FC = () => {
   };
 
   const handleGrantPermission = async () => {
-    if (!shareTargetId || !shareGranteeValue) {
+    const effectiveTargetId = shareTargetType === 'all' ? (shareTargetId || 'root') : shareTargetId;
+    if (!effectiveTargetId || !shareGranteeValue) {
       setShareNotice({ ok: false, message: 'Please select what to share and who to grant access to.' });
       return;
     }
@@ -145,7 +122,7 @@ export const LibraryView: React.FC = () => {
     setIsGranting(true);
     setShareNotice(null);
     try {
-      const targetLabel = shareTargetName || (shareTargetType === 'all' ? 'Entire Drive' : shareTargetId);
+      const targetLabel = shareTargetName || (shareTargetType === 'all' ? 'Entire Google Drive' : effectiveTargetId);
       let granteeLabel = shareGranteeValue;
       if (shareGranteeType === 'user') {
         const p = people.find((u) => u.Email.toLowerCase() === shareGranteeValue.toLowerCase());
@@ -154,7 +131,7 @@ export const LibraryView: React.FC = () => {
 
       const res = await grantDrivePermission({
         targetType: shareTargetType,
-        targetId: shareTargetId,
+        targetId: effectiveTargetId,
         targetName: targetLabel,
         granteeType: shareGranteeType,
         granteeValue: shareGranteeValue,
@@ -238,58 +215,6 @@ export const LibraryView: React.FC = () => {
     );
   }, [accessibleFoldersWithImages, accessibleRootImages]);
 
-  // Submissions filter options
-  const availableSites = useMemo(() => {
-    const fromUploads = uploads.map((u) => u.site).filter(Boolean);
-    const fromSites = sites.map((s) => s.SiteName);
-    return Array.from(new Set([...fromSites, ...fromUploads])).sort();
-  }, [uploads, sites]);
-
-  const availableTopics = useMemo(() => {
-    const set = new Set<string>();
-    for (const u of uploads) {
-      if (u.topic) set.add(u.topic);
-    }
-    return Array.from(set).sort();
-  }, [uploads]);
-
-  const availableOfficers = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const u of uploads) {
-      if (u.officer) {
-        map.set(u.officer.toLowerCase(), u.officerName || u.officer);
-      }
-    }
-    return Array.from(map.entries())
-      .map(([email, name]) => ({ email, name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [uploads]);
-
-  const filteredSubmissions = useMemo(() => {
-    return uploads.filter((u) => {
-      if (subTab === 'top' && !u.topPick) return false;
-      if (subTab === 'creative' && !u.isCreativeWork) return false;
-
-      if (selectedSite !== 'all' && u.site !== selectedSite) return false;
-      if (selectedTopic !== 'all' && u.topic !== selectedTopic) return false;
-      if (selectedOfficer !== 'all' && u.officer.toLowerCase() !== selectedOfficer.toLowerCase()) return false;
-
-      if (subSearch.trim()) {
-        const q = subSearch.toLowerCase();
-        return (
-          u.id.toLowerCase().includes(q) ||
-          u.topic.toLowerCase().includes(q) ||
-          u.site.toLowerCase().includes(q) ||
-          (u.officerName && u.officerName.toLowerCase().includes(q)) ||
-          u.officer.toLowerCase().includes(q) ||
-          u.note.toLowerCase().includes(q) ||
-          (u.place && u.place.toLowerCase().includes(q))
-        );
-      }
-      return true;
-    });
-  }, [uploads, subTab, selectedSite, selectedTopic, selectedOfficer, subSearch]);
-
   const formatFileSize = (bytes?: number): string => {
     if (!bytes) return 'N/A';
     if (bytes < 1024) return `${bytes} B`;
@@ -314,7 +239,7 @@ export const LibraryView: React.FC = () => {
   return (
     <div className="space-y-5 pb-28 md:pb-12 max-w-5xl mx-auto animate-in fade-in">
       {/* ========================================================
-          1. HEADER ROW: Page Title, View Toggle & Admin Controls
+          1. HEADER ROW: Page Title & Admin Sharing Controls
           ======================================================== */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
@@ -323,15 +248,13 @@ export const LibraryView: React.FC = () => {
               Media Library
             </h1>
             <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-              {viewMode === 'drive' ? 'Google Drive' : 'Shift Moments'}
+              Google Drive
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-0.5">
-            {viewMode === 'drive'
-              ? isAdmin
-                ? 'Browse all Google Drive folders and manage team sharing permissions.'
-                : 'Browse Google Drive folders and media shared with you by the admin.'
-              : `Showing ${filteredSubmissions.length} of ${uploads.length} verified submissions.`}
+            {isAdmin
+              ? 'Browse all Google Drive folders and manage team sharing permissions.'
+              : 'Browse Google Drive folders and media shared with you by the admin.'}
           </p>
         </div>
 
@@ -351,40 +274,13 @@ export const LibraryView: React.FC = () => {
               )}
             </button>
           )}
-
-          {/* Mode Switcher: Google Drive vs Shift Submissions */}
-          <div className="flex bg-slate-100 p-1 rounded-2xl text-xs font-medium border border-slate-200/60 shadow-2xs">
-            <button
-              onClick={() => setViewMode('drive')}
-              className={`px-3 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
-                viewMode === 'drive'
-                  ? 'bg-white text-indigo-700 shadow-xs font-bold'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <HardDrive className="w-3.5 h-3.5" />
-              <span>Drive Storage</span>
-            </button>
-            <button
-              onClick={() => setViewMode('submissions')}
-              className={`px-3 py-1.5 rounded-xl transition cursor-pointer flex items-center gap-1.5 ${
-                viewMode === 'submissions'
-                  ? 'bg-white text-indigo-700 shadow-xs font-bold'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <ImageIcon className="w-3.5 h-3.5" />
-              <span>Submissions ({uploads.length})</span>
-            </button>
-          </div>
         </div>
       </div>
 
       {/* ========================================================
-          2. VIEW 1: GOOGLE DRIVE STORAGE (Folders & Images)
+          2. GOOGLE DRIVE STORAGE (Folders & Images)
           ======================================================== */}
-      {viewMode === 'drive' && (
-        <div className="space-y-4">
+      <div className="space-y-4">
           {/* Drive Status & Search Bar */}
           <div className="glass-card rounded-2xl p-4 border border-white/80 shadow-xs space-y-3">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -490,14 +386,7 @@ export const LibraryView: React.FC = () => {
               <p className="text-xs text-slate-500 max-w-md mx-auto leading-relaxed">
                 You currently do not have access to any Google Drive folders or files. Access is managed by administrators ({appConfig.appsScriptUrl ? 'technical admin' : 'tanveer@empireonecx.com'}). Ask an admin to share specific site folders or media with your account.
               </p>
-              <div className="pt-2">
-                <button
-                  onClick={() => setViewMode('submissions')}
-                  className="px-4 py-2 rounded-xl text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 transition shadow-xs cursor-pointer"
-                >
-                  View Shift Submissions
-                </button>
-              </div>
+
             </div>
           )}
 
@@ -645,173 +534,6 @@ export const LibraryView: React.FC = () => {
             </div>
           )}
         </div>
-      )}
-
-      {/* ========================================================
-          3. VIEW 2: SHIFT SUBMISSIONS (Officer Uploads from Sheets)
-          ======================================================== */}
-      {viewMode === 'submissions' && (
-        <div className="space-y-4">
-          {/* Submissions Filter Toolbar */}
-          <div className="glass-card rounded-2xl p-3.5 border border-white/80 shadow-xs space-y-2.5">
-            <div className="flex items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800">
-                <Filter className="w-3.5 h-3.5 text-indigo-600" />
-                <span>Filters</span>
-              </div>
-
-              {/* Submissions Tab Switcher */}
-              <div className="flex bg-slate-100 p-0.5 rounded-xl text-xs font-medium">
-                <button
-                  onClick={() => setSubTab('all')}
-                  className={`px-2.5 py-1 rounded-lg transition ${
-                    subTab === 'all' ? 'bg-white text-slate-900 shadow-xs font-bold' : 'text-slate-500'
-                  }`}
-                >
-                  All ({uploads.length})
-                </button>
-                <button
-                  onClick={() => setSubTab('top')}
-                  className={`px-2.5 py-1 rounded-lg transition flex items-center gap-1 ${
-                    subTab === 'top' ? 'bg-white text-amber-600 shadow-xs font-bold' : 'text-slate-500'
-                  }`}
-                >
-                  <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-                  <span>Top Picks</span>
-                </button>
-                <button
-                  onClick={() => setSubTab('creative')}
-                  className={`px-2.5 py-1 rounded-lg transition flex items-center gap-1 ${
-                    subTab === 'creative' ? 'bg-white text-indigo-600 shadow-xs font-bold' : 'text-slate-500'
-                  }`}
-                >
-                  <Sparkles className="w-3 h-3 text-indigo-500" />
-                  <span>Creative</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Keyword Search */}
-            <div className="relative">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search keyword, officer, note, or ID..."
-                value={subSearch}
-                onChange={(e) => setSubSearch(e.target.value)}
-                className="w-full pl-9 pr-4 py-1.5 text-xs rounded-xl bg-slate-50 border border-slate-200 text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
-              />
-            </div>
-
-            {/* Select Dropdowns */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-1">
-              <select
-                value={selectedSite}
-                onChange={(e) => setSelectedSite(e.target.value)}
-                className="glass-input w-full px-2.5 py-1.5 text-xs rounded-xl text-slate-800 font-medium cursor-pointer"
-              >
-                <option value="all">📍 All Locations</option>
-                {availableSites.map((s: string) => (
-                  <option key={s} value={s}>{s}</option>
-                ))}
-              </select>
-
-              <select
-                value={selectedTopic}
-                onChange={(e) => setSelectedTopic(e.target.value)}
-                className="glass-input w-full px-2.5 py-1.5 text-xs rounded-xl text-slate-800 font-medium cursor-pointer"
-              >
-                <option value="all">🏷️ All Categories</option>
-                {availableTopics.map((t: string) => (
-                  <option key={t} value={t}>{t}</option>
-                ))}
-              </select>
-
-              <select
-                value={selectedOfficer}
-                onChange={(e) => setSelectedOfficer(e.target.value)}
-                className="glass-input w-full px-2.5 py-1.5 text-xs rounded-xl text-slate-800 font-medium cursor-pointer"
-              >
-                <option value="all">👤 All Submitting Officers</option>
-                {availableOfficers.map((o: { email: string; name: string }) => (
-                  <option key={o.email} value={o.email}>{o.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Submissions Grid */}
-          {filteredSubmissions.length === 0 ? (
-            <div className="glass-card rounded-3xl p-12 text-center text-xs text-slate-400 border border-white/80 space-y-2">
-              <Camera className="w-10 h-10 text-slate-300 mx-auto stroke-1" />
-              <p>No submissions match the selected filters.</p>
-            </div>
-          ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
-              {filteredSubmissions.map((item) => (
-                <article
-                  key={item.id}
-                  onClick={() => setSelectedSubmission(item)}
-                  className="glass-card hover:bg-white/95 active:scale-[0.98] rounded-2xl overflow-hidden border border-white/80 shadow-xs cursor-pointer transition flex flex-col justify-between group"
-                >
-                  <div>
-                    <div className="relative aspect-square bg-slate-950 overflow-hidden">
-                      <SubmissionThumbnail
-                        url={item.mediaUrl}
-                        topic={item.topic}
-                        mediaType={item.mediaType}
-                        site={item.site}
-                      />
-
-                      {item.topPick && (
-                        <div className="absolute top-2 right-2 bg-amber-400 text-slate-950 text-[10px] font-bold p-1 rounded-full shadow-xs">
-                          <Star className="w-3 h-3 fill-slate-950" />
-                        </div>
-                      )}
-
-                      {item.isCreativeWork && (
-                        <div className="absolute top-2 left-2 bg-indigo-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-md shadow-xs flex items-center gap-1">
-                          <Sparkles className="w-2.5 h-2.5" />
-                          <span>Creative</span>
-                        </div>
-                      )}
-
-                      {item.mediaType === 'Video' && (
-                        <div className="absolute bottom-1.5 right-1.5 px-1.5 py-0.5 rounded-md bg-black/70 text-white text-[10px] flex items-center gap-1 font-medium">
-                          <Video className="w-3 h-3 text-rose-400" />
-                        </div>
-                      )}
-
-                      <div
-                        className={`absolute bottom-1.5 left-1.5 px-2 py-0.5 rounded-md text-[10px] font-semibold text-white ${
-                          item.reviewStatus === 'Accepted'
-                            ? 'bg-emerald-600/90'
-                            : item.reviewStatus === 'Reshoot'
-                            ? 'bg-rose-600/90'
-                            : item.reviewStatus === 'Top pick'
-                            ? 'bg-amber-600/90'
-                            : 'bg-black/60'
-                        }`}
-                      >
-                        {item.reviewStatus}
-                      </div>
-                    </div>
-
-                    <div className="p-2.5">
-                      <h4 className="text-xs font-bold text-slate-900 truncate">
-                        {item.topic}
-                      </h4>
-                      <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                        {item.site} · {item.officerName || item.officer.split('@')[0]}
-                      </p>
-                    </div>
-                  </div>
-                </article>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
 
       {/* ========================================================
           4. LIGHTBOX MODAL FOR GOOGLE DRIVE IMAGES
@@ -913,97 +635,7 @@ export const LibraryView: React.FC = () => {
         </div>
       )}
 
-      {/* ========================================================
-          5. SUBMISSION INSPECTION MODAL
-          ======================================================== */}
-      {selectedSubmission && (
-        <div className="fixed inset-0 z-50 bg-slate-950/45 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4 overflow-hidden">
-          <div className="glass-card rounded-3xl max-w-md w-full p-5 shadow-2xl border border-white/80 space-y-3.5 max-h-[90vh] overflow-y-auto custom-scrollbar">
-            <div className="flex items-start justify-between pb-1">
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <h3 className="font-bold text-slate-900 text-base">{selectedSubmission.topic}</h3>
-                  {selectedSubmission.isCreativeWork && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
-                      Creative Work
-                    </span>
-                  )}
-                  {selectedSubmission.usedInFinal && (
-                    <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Approved Final
-                    </span>
-                  )}
-                </div>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {selectedSubmission.site} · {selectedSubmission.shift} Shift · {selectedSubmission.shiftDate}
-                </p>
-              </div>
-              <button
-                onClick={() => setSelectedSubmission(null)}
-                aria-label="Close detail modal"
-                className="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-500 transition-colors cursor-pointer shrink-0"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
 
-            <div className="rounded-2xl overflow-hidden aspect-video bg-black flex items-center justify-center border border-slate-200/70">
-              <SubmissionThumbnail
-                url={selectedSubmission.mediaUrl}
-                topic={selectedSubmission.topic}
-                mediaType={selectedSubmission.mediaType}
-                site={selectedSubmission.site}
-                inModal
-              />
-            </div>
-
-            <div className="p-3 rounded-2xl bg-white/70 border border-slate-200/70 space-y-1.5 text-xs">
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="text-slate-400">Submitting Officer:</span>
-                <span className="font-semibold text-slate-800 flex items-center gap-1">
-                  <User className="w-3 h-3 text-indigo-600" />
-                  {selectedSubmission.officerName || selectedSubmission.officer}
-                </span>
-              </div>
-              <div className="flex items-center justify-between text-slate-600">
-                <span className="text-slate-400">Review Status:</span>
-                <span className="font-semibold text-slate-800">{selectedSubmission.reviewStatus}</span>
-              </div>
-              {selectedSubmission.reviewNote && (
-                <div className="pt-1 border-t border-slate-100">
-                  <span className="text-slate-400 text-[11px] block">Reviewer Feedback:</span>
-                  <p className="text-amber-900 font-medium mt-0.5">"{selectedSubmission.reviewNote}"</p>
-                </div>
-              )}
-            </div>
-
-            <p className="text-xs text-slate-700 bg-white/60 p-3 rounded-2xl leading-relaxed border border-slate-200/50">
-              {selectedSubmission.note}
-            </p>
-
-            {selectedSubmission.mapLink && (
-              <a
-                href={selectedSubmission.mapLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-xs text-indigo-600 font-semibold flex items-center gap-1 hover:underline"
-              >
-                <MapPin className="w-3.5 h-3.5 text-rose-500" />
-                <span>{selectedSubmission.place || 'View Location on Google Maps'}</span>
-                <ExternalLink className="w-3 h-3" />
-              </a>
-            )}
-
-            <button
-              onClick={() => setSelectedSubmission(null)}
-              className="w-full bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold text-xs py-2.5 rounded-xl cursor-pointer transition-colors"
-            >
-              Done
-            </button>
-          </div>
-        </div>
-      )}
 
       {/* ========================================================
           6. ADMIN DRIVE ACCESS & SHARING MODAL
@@ -1417,39 +1049,4 @@ const DriveMediaCard: React.FC<{
   );
 };
 
-// Reusable clean thumbnail with zero external stock image fallbacks
-const SubmissionThumbnail: React.FC<{
-  url?: string;
-  topic: string;
-  mediaType: string;
-  site?: string;
-  inModal?: boolean;
-}> = ({ url, topic, mediaType, site, inModal }) => {
-  const [hasError, setHasError] = useState(false);
 
-  if (!url || hasError) {
-    return (
-      <div className={`w-full h-full bg-gradient-to-br from-slate-900 via-slate-850 to-indigo-950 flex flex-col items-center justify-center p-4 text-center select-none ${inModal ? 'min-h-[180px]' : ''}`}>
-        <div className="w-10 h-10 rounded-2xl bg-white/10 border border-white/15 flex items-center justify-center text-white/80 mb-2 shadow-inner">
-          {mediaType === 'Video' ? <Video className="w-5 h-5 text-indigo-300" /> : <Camera className="w-5 h-5 text-indigo-300" />}
-        </div>
-        <span className="text-xs font-bold text-white/90 line-clamp-1 max-w-[90%]">
-          {topic}
-        </span>
-        <span className="text-[10px] text-slate-400 mt-0.5">
-          {site ? `${site} · ` : ''}{mediaType === 'Video' ? 'Video Record' : 'Photo Record'}
-        </span>
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={url}
-      alt={topic}
-      loading="lazy"
-      onError={() => setHasError(true)}
-      className={inModal ? 'max-h-full max-w-full object-contain' : 'w-full h-full object-cover group-hover:scale-105 transition duration-300'}
-    />
-  );
-};
