@@ -395,11 +395,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     // Keep records, directions, reports, activities, and sync health in sync with server state across all user sessions
     if (!liveSheetsMetaRef.current) {
       if (Array.isArray(data.uploads)) {
-        setUploads((prev) => (JSON.stringify(prev) === JSON.stringify(data.uploads) ? prev : data.uploads));
+        const cleanUploads = data.uploads.filter(
+          (u) => !u.id?.startsWith('UPL-') && !u.fileName?.startsWith('UPL-') && !u.mediaUrl?.includes('unsplash')
+        );
+        setUploads((prev) => (JSON.stringify(prev) === JSON.stringify(cleanUploads) ? prev : cleanUploads));
       }
       if (Array.isArray(data.directions)) {
+        const cleanDirs = data.directions.filter(
+          (d) => !d.feedbackId?.startsWith('FB-0') && !d.feedbackId?.startsWith('FB-1')
+        );
         setDirections((prev) => {
-          const applied = applyAckMap(data.directions, googleUser?.email || undefined);
+          const applied = applyAckMap(cleanDirs, googleUser?.email || undefined);
           return JSON.stringify(prev) === JSON.stringify(applied) ? prev : applied;
         });
       }

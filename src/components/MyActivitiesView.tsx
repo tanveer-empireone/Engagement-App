@@ -17,7 +17,9 @@ import {
   Sparkles,
   Calendar,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Users,
+  User
 } from 'lucide-react';
 
 const CATEGORIES: { label: string; value: ActivityCategory; color: string }[] = [
@@ -48,11 +50,21 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
     uploads,
     directions,
     canReview,
-    reviewUpload
+    reviewUpload,
+    isAdmin,
+    isDirector
   } = useSignedInApp();
 
   const todayYmd = new Date().toISOString().slice(0, 10);
   const [selectedDate, setSelectedDate] = useState<string>(todayYmd);
+
+  // Admin or Director can view all team members' submissions and activities
+  const canViewAllTeam = Boolean(
+    isAdmin || isDirector || currentUser.Role === 'Admin' || currentUser.Role === 'Director'
+  );
+  // Default to 'all' for Admin/Director so they immediately see team activity, or can toggle to 'mine'
+  const [adminScope, setAdminScope] = useState<'all' | 'mine'>('all');
+  const isViewingAll = canViewAllTeam && adminScope === 'all';
 
   // Form state
   const [isFormOpen, setIsFormOpen] = useState(false);
@@ -64,46 +76,68 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [statusFilter, setStatusFilter] = useState<'all' | 'reshoot' | 'approved'>('all');
 
-  // Filter activities for current user and selected date
-  const userActivities = useMemo(() => {
+  // Filter activities: Admin/Director can see all users, regular users only see their own
+  const scopedActivities = useMemo(() => {
     return activities.filter((a) => {
       const isOwner = a.officerEmail?.toLowerCase() === currentUser.Email.toLowerCase();
       const isDate = a.date === selectedDate;
+      if (isViewingAll) {
+        return isDate;
+      }
       return isOwner && isDate;
     });
-  }, [activities, currentUser.Email, selectedDate]);
+  }, [activities, currentUser.Email, selectedDate, isViewingAll]);
 
-  // Today's media uploads for this officer
-  const myUploadsToday = useMemo(() => {
-    return uploads.filter(
-      (u) =>
-        u.officer.toLowerCase() === currentUser.Email.toLowerCase() &&
-        u.shiftDate === selectedDate
-    );
-  }, [uploads, currentUser.Email, selectedDate]);
+  // Media uploads for the selected date
+  const scopedUploadsToday = useMemo(() => {
+    return uploads.filter((u) => {
+      const isDate = u.shiftDate === selectedDate;
+      if (isViewingAll) {
+        return isDate;
+      }
+      return u.officer.toLowerCase() === currentUser.Email.toLowerCase() && isDate;
+    });
+  }, [uploads, currentUser.Email, selectedDate, isViewingAll]);
 
-  // Uploads requiring reshoot / revisions across all shifts for this officer
-  const myReshootItems = useMemo(() => {
+  // All uploads for this scope (across shifts)
+  const scopedAllUploads = useMemo(() => {
+    if (isViewingAll) {
+      return uploads;
+    }
+    return uploads.filter((u) => u.officer.toLowerCase() === currentUser.Email.toLowerCase());
+  }, [uploads, currentUser.Email, isViewingAll]);
+
+  // Uploads requiring reshoot / revisions
+  const scopedReshootItems = useMemo(() => {
+    if (isViewingAll) {
+      return uploads.filter((u) => u.reviewStatus === 'Reshoot');
+    }
     return uploads.filter(
       (u) =>
         u.officer.toLowerCase() === currentUser.Email.toLowerCase() &&
         u.reviewStatus === 'Reshoot'
     );
-  }, [uploads, currentUser.Email]);
+  }, [uploads, currentUser.Email, isViewingAll]);
 
   // Uploads approved / top picks
-  const myApprovedItems = useMemo(() => {
+  const scopedApprovedItems = useMemo(() => {
+    if (isViewingAll) {
+      return uploads.filter((u) => u.reviewStatus === 'Accepted' || u.topPick);
+    }
     return uploads.filter(
       (u) =>
         u.officer.toLowerCase() === currentUser.Email.toLowerCase() &&
         (u.reviewStatus === 'Accepted' || u.topPick)
     );
-  }, [uploads, currentUser.Email]);
+  }, [uploads, currentUser.Email, isViewingAll]);
 
-  // Acknowledged directions for today
-  const myAcknowledgedTasks = useMemo(() => {
+  // Acknowledged directions
+  const scopedAcknowledgedTasks = useMemo(() => {
+    if (isViewingAll) {
+      return directions.filter((d) => d.acknowledged || (d.acknowledgedBy && d.acknowledgedBy.length > 0));
+    }
     return directions.filter((d) => d.acknowledged || d.acknowledgedBy?.includes(currentUser.Email));
-  }, [directions, currentUser.Email]);
+  }, [directions, currentUser.Email, isViewingAll]);
 
   const handleSaveActivity = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -175,7 +209,36 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
           </div>
         </div>
 
-        <div className="flex items-center gap-2 self-start sm:self-auto">
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+          {canViewAllTeam && (
+            <div className="flex items-center bg-slate-100 p-1 rounded-2xl border border-slate-200/60 text-xs">
+              <button
+                type="button"
+                onClick={() => setAdminScope('all')}
+                className={`px-3 py-1 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  adminScope === 'all'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                <span>All Team</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAdminScope('mine')}
+                className={`px-3 py-1 rounded-xl font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  adminScope === 'mine'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <User className="w-3.5 h-3.5" />
+                <span>My Own</span>
+              </button>
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 bg-slate-100 rounded-xl px-2.5 py-1 text-xs">
             <Calendar className="w-3.5 h-3.5 text-slate-500" />
             <input
@@ -203,13 +266,17 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
           <div className="space-y-1 max-w-lg">
             <div className="flex items-center gap-1.5 text-indigo-300 text-[11px] font-bold uppercase tracking-wider">
               <Sparkles className="w-3.5 h-3.5" />
-              <span>Accumulated for End of Day (EOD)</span>
+              <span>
+                Accumulated for End of Day (EOD) {isViewingAll ? '· All Team Overview' : '· My Personal Overview'}
+              </span>
             </div>
             <h3 className="text-base sm:text-lg font-bold">
-              {userActivities.length} Activities · {myUploadsToday.length} Photos · {myAcknowledgedTasks.length} Tasks
+              {scopedActivities.length} Activities · {scopedUploadsToday.length} Photos · {scopedAcknowledgedTasks.length} Tasks
             </h3>
             <p className="text-xs text-slate-300 leading-relaxed">
-              All logged activities, photo uploads, and acknowledged tasks are pre-populated into your EOD Report. No external spreadsheet or tool needed.
+              {isViewingAll
+                ? 'Showing operational activity and uploads across all team members for End of Day compilation.'
+                : 'All logged activities, photo uploads, and acknowledged tasks are pre-populated into your EOD Report. No external spreadsheet or tool needed.'}
             </p>
           </div>
 
@@ -227,22 +294,22 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
         <div className="relative z-10 grid grid-cols-2 sm:grid-cols-4 gap-2 mt-4 pt-3 border-t border-white/10 text-xs">
           <div className="bg-white/10 rounded-xl p-2">
             <span className="text-[10px] text-slate-300 block">Activities Logged</span>
-            <span className="text-base font-bold tabular-nums">{userActivities.length}</span>
+            <span className="text-base font-bold tabular-nums">{scopedActivities.length}</span>
           </div>
           <div className="bg-white/10 rounded-xl p-2">
             <span className="text-[10px] text-slate-300 block">Photos / Media</span>
-            <span className="text-base font-bold tabular-nums">{myUploadsToday.length}</span>
+            <span className="text-base font-bold tabular-nums">{scopedUploadsToday.length}</span>
           </div>
           <div className="bg-white/10 rounded-xl p-2">
             <span className="text-[10px] text-slate-300 block">Top Picks</span>
             <span className="text-base font-bold tabular-nums text-amber-300">
-              {myUploadsToday.filter((u) => u.topPick).length}
+              {scopedUploadsToday.filter((u) => u.topPick).length}
             </span>
           </div>
           <div className="bg-white/10 rounded-xl p-2">
             <span className="text-[10px] text-slate-300 block">Revisions Addressed</span>
             <span className="text-base font-bold tabular-nums text-emerald-300">
-              {myReshootItems.length === 0 ? '✓ None pending' : `${myReshootItems.length} active`}
+              {scopedReshootItems.length === 0 ? '✓ None pending' : `${scopedReshootItems.length} active`}
             </span>
           </div>
         </div>
@@ -255,9 +322,14 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
             <h3 className="text-sm font-bold text-slate-900">
               Review &amp; Revisions Queue
             </h3>
-            {myReshootItems.length > 0 && (
+            {isViewingAll && (
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 border border-indigo-200">
+                All Team
+              </span>
+            )}
+            {scopedReshootItems.length > 0 && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800">
-                {myReshootItems.length} Revision{myReshootItems.length > 1 ? 's' : ''} Needed
+                {scopedReshootItems.length} Revision{scopedReshootItems.length > 1 ? 's' : ''} Needed
               </span>
             )}
           </div>
@@ -272,7 +344,7 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                   : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
               }`}
             >
-              All ({uploads.filter((u) => u.officer.toLowerCase() === currentUser.Email.toLowerCase()).length})
+              All ({scopedAllUploads.length})
             </button>
             <button
               type="button"
@@ -283,7 +355,7 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                   : 'bg-amber-50 text-amber-800 hover:bg-amber-100'
               }`}
             >
-              Revisions ({myReshootItems.length})
+              Revisions ({scopedReshootItems.length})
             </button>
             <button
               type="button"
@@ -294,30 +366,35 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                   : 'bg-emerald-50 text-emerald-800 hover:bg-emerald-100'
               }`}
             >
-              Approved ({myApprovedItems.length})
+              Approved ({scopedApprovedItems.length})
             </button>
           </div>
         </div>
 
         {/* Filtered Review Items */}
         {(() => {
-          const userAllUploads = uploads.filter(
-            (u) => u.officer.toLowerCase() === currentUser.Email.toLowerCase()
-          );
           const displayed =
             statusFilter === 'reshoot'
-              ? myReshootItems
+              ? scopedReshootItems
               : statusFilter === 'approved'
-              ? myApprovedItems
-              : userAllUploads;
+              ? scopedApprovedItems
+              : scopedAllUploads;
 
           if (displayed.length === 0) {
             return (
-              <div className="p-6 text-center text-xs text-slate-400">
+              <div className="p-8 text-center text-xs text-slate-400 rounded-2xl bg-slate-50/50 border border-dashed border-slate-200">
                 <CheckCircle2 className="w-8 h-8 text-slate-300 mx-auto mb-1.5" />
-                <p className="font-semibold text-slate-700">No review feedback in this view</p>
-                <p className="text-[11px] text-slate-400 mt-0.5">
-                  When managers or site leads review your photos, notes and revision requests appear right here.
+                <p className="font-semibold text-slate-700 text-sm">
+                  {statusFilter === 'reshoot'
+                    ? 'No revisions needed'
+                    : statusFilter === 'approved'
+                    ? 'No approved items in this filter'
+                    : 'No uploads in the queue yet'}
+                </p>
+                <p className="text-[11px] text-slate-400 mt-1 max-w-md mx-auto">
+                  {isViewingAll
+                    ? 'When team members submit photos or videos, their uploads and review feedback will appear here.'
+                    : 'When you take photos or submit media, your uploads and review feedback will appear right here.'}
                 </p>
               </div>
             );
@@ -325,7 +402,7 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
 
           return (
             <div className="grid sm:grid-cols-2 gap-3">
-              {displayed.slice(0, 6).map((item) => (
+              {displayed.slice(0, 12).map((item) => (
                 <div
                   key={item.id}
                   className={`p-3 rounded-2xl border transition-all flex items-start gap-3 ${
@@ -371,8 +448,13 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                       </span>
                     </div>
 
-                    <div className="text-[10px] text-slate-400">
-                      {item.shiftDate} · {item.spot}
+                    <div className="text-[10px] text-slate-400 truncate">
+                      {isViewingAll && (
+                        <span className="font-semibold text-slate-600 mr-1">
+                          {item.officerName || item.officer} ·
+                        </span>
+                      )}
+                      {item.shiftDate} · {item.spot || item.site}
                     </div>
 
                     {item.reviewNote && (
@@ -407,10 +489,12 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
         <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
           <div>
             <h3 className="text-sm font-bold text-slate-900">
-              Daily Activity Log ({userActivities.length})
+              Daily Activity Log ({scopedActivities.length})
             </h3>
             <p className="text-[11px] text-slate-500">
-              Log engagements throughout your shift. Feeds automatically into your EOD.
+              {isViewingAll
+                ? 'Team activities logged across shifts and sites. Feeds automatically into EOD.'
+                : 'Log engagements throughout your shift. Feeds automatically into your EOD.'}
             </p>
           </div>
 
@@ -532,19 +616,24 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
         )}
 
         {/* List of Logged Activities */}
-        {userActivities.length === 0 ? (
-          <div className="p-8 text-center text-xs text-slate-400">
+        {scopedActivities.length === 0 ? (
+          <div className="p-8 text-center text-xs text-slate-400 rounded-2xl bg-slate-50/50 border border-dashed border-slate-200">
             <ClipboardList className="w-8 h-8 text-slate-300 mx-auto mb-1.5" />
-            <p className="font-semibold text-slate-700">No activities logged for {selectedDate}</p>
-            <p className="text-[11px] text-slate-400 mt-0.5">
-              Click &ldquo;Log Activity&rdquo; to add morning briefings, floor games, or engagement checks.
+            <p className="font-semibold text-slate-700 text-sm">
+              No activities logged for {selectedDate === todayYmd ? 'today' : selectedDate}
+            </p>
+            <p className="text-[11px] text-slate-400 mt-1 max-w-md mx-auto">
+              {isViewingAll
+                ? 'No activities have been recorded yet for this date. Click "+ Log Activity" above to add one.'
+                : 'Click "+ Log Activity" above to add morning briefings, floor games, or engagement checks.'}
             </p>
           </div>
         ) : (
           <div className="space-y-2">
-            {userActivities.map((act) => {
+            {scopedActivities.map((act) => {
               const catMeta = CATEGORIES.find((c) => c.value === act.category) || CATEGORIES[0];
               const isDone = act.status === 'Completed';
+              const canEditThis = canViewAllTeam || act.officerEmail?.toLowerCase() === currentUser.Email.toLowerCase();
 
               return (
                 <div
@@ -585,6 +674,11 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                         >
                           {act.status}
                         </span>
+                        {isViewingAll && (
+                          <span className="text-[10px] font-semibold text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md">
+                            {act.officerName || act.officerEmail} {act.site ? `(${act.site})` : ''}
+                          </span>
+                        )}
                       </div>
 
                       <h4
@@ -603,24 +697,26 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                     </div>
                   </div>
 
-                  <div className="flex items-center gap-1 shrink-0 pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => handleEditClick(act)}
-                      aria-label="Edit activity"
-                      className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 transition cursor-pointer"
-                    >
-                      <Edit2 className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => deleteActivity(act.id)}
-                      aria-label="Delete activity"
-                      className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  {canEditThis && (
+                    <div className="flex items-center gap-1 shrink-0 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleEditClick(act)}
+                        aria-label="Edit activity"
+                        className="p-1.5 text-slate-400 hover:text-indigo-600 rounded-lg hover:bg-indigo-50 transition cursor-pointer"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => deleteActivity(act.id)}
+                        aria-label="Delete activity"
+                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               );
             })}

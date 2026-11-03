@@ -178,6 +178,23 @@ function normalizeEmail(email: string | null | undefined): string {
   return (email || '').trim().toLowerCase();
 }
 
+function isLegacyDummyUpload(u: any): boolean {
+  if (!u || typeof u !== 'object') return true;
+  const id = String(u.id || '');
+  const url = String(u.mediaUrl || '');
+  const fn = String(u.fileName || '');
+  if (id.startsWith('UPL-') || fn.startsWith('UPL-')) return true;
+  if (url.includes('images.unsplash.com')) return true;
+  return false;
+}
+
+function isLegacyDummyDirection(d: any): boolean {
+  if (!d || typeof d !== 'object') return true;
+  const id = String(d.feedbackId || '');
+  if (id.startsWith('FB-0') || id.startsWith('FB-1')) return true;
+  return false;
+}
+
 function readStore(): ServerStore {
   try {
     if (!fs.existsSync(DATA_DIR)) {
@@ -200,11 +217,17 @@ function readStore(): ServerStore {
         }
       }
 
-      return {
+      const rawUploads: any[] = Array.isArray(parsed.uploads) ? parsed.uploads : INITIAL_STORE.uploads;
+      const cleanUploads = rawUploads.filter((u: any) => !isLegacyDummyUpload(u));
+
+      const rawDirections: any[] = Array.isArray(parsed.directions) ? parsed.directions : INITIAL_STORE.directions;
+      const cleanDirections = rawDirections.filter((d: any) => !isLegacyDummyDirection(d));
+
+      const storeResult: ServerStore = {
         people: peopleList,
         config: parsed.config && typeof parsed.config === 'object' ? { ...INITIAL_STORE.config, ...parsed.config } : INITIAL_STORE.config,
-        uploads: Array.isArray(parsed.uploads) ? parsed.uploads : INITIAL_STORE.uploads,
-        directions: Array.isArray(parsed.directions) ? parsed.directions : INITIAL_STORE.directions,
+        uploads: cleanUploads,
+        directions: cleanDirections,
         shiftReports: Array.isArray(parsed.shiftReports) ? parsed.shiftReports : INITIAL_STORE.shiftReports,
         activities: Array.isArray(parsed.activities) ? parsed.activities : [],
         showCaptureForAdmin: Boolean(parsed.showCaptureForAdmin),
@@ -212,6 +235,16 @@ function readStore(): ServerStore {
         clickUpToken: typeof parsed.clickUpToken === 'string' ? parsed.clickUpToken : '',
         drivePermissions: Array.isArray(parsed.drivePermissions) ? parsed.drivePermissions : []
       };
+
+      if (cleanUploads.length !== rawUploads.length || cleanDirections.length !== rawDirections.length) {
+        try {
+          writeStore(storeResult);
+        } catch (e) {
+          console.warn('Could not rewrite cleaned store:', e);
+        }
+      }
+
+      return storeResult;
     }
   } catch (err) {
     console.warn('Failed reading server store, initializing fresh store:', err);
