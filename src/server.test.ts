@@ -3,6 +3,22 @@ import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import { createGoogleDriveReaderPermission, deleteGoogleDrivePermission } from '../server.ts';
+import { mergeDriveRootChildren } from './utils/driveDiscovery.ts';
+
+test('directly shared folders are discovered only inside the configured Drive root', () => {
+  const result = mergeDriveRootChildren(
+    'app-root',
+    [{ id: 'direct', parents: ['app-root'], name: 'Direct' }],
+    [
+      { id: 'shared-child', parents: ['app-root'], name: 'Shared child' },
+      { id: 'other-drive', parents: ['another-root'], name: 'Unrelated' },
+      { id: 'direct', parents: ['app-root'], name: 'Duplicate' }
+    ]
+  );
+
+  assert.deepEqual(result.map((item) => item.id), ['direct', 'shared-child']);
+  assert.equal(result[0].name, 'Direct');
+});
 
 test('Google Drive permission helpers call the real permissions API', async () => {
   const originalFetch = globalThis.fetch;

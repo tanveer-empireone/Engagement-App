@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { mergeDriveRootChildren } from './src/utils/driveDiscovery.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -606,15 +607,24 @@ export function createExpressApp(): express.Express {
       });
       const rootMeta = rootMetaRes.ok ? await rootMetaRes.json() : { id: rootId, name: 'E1CX Experience' };
 
-      // 2. Fetch all direct subfolders
+      // 2. Fetch direct children plus folders explicitly shared with this account.
+      // A user can read a shared child without being allowed to browse its parent.
       const folderQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+      const sharedFolderQuery = `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
       const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
-      const folderRes = await fetch(
-        `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`,
-        { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
-      );
+      const [folderRes, sharedFolderRes] = await Promise.all([
+        fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`,
+          { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+        ),
+        fetch(
+          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(sharedFolderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`,
+          { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+        )
+      ]);
       const folderData = folderRes.ok ? await folderRes.json() : { files: [] };
-      const folders: any[] = folderData.files || [];
+      const sharedFolderData = sharedFolderRes.ok ? await sharedFolderRes.json() : { files: [] };
+      const folders: any[] = mergeDriveRootChildren(rootId, folderData.files || [], sharedFolderData.files || []);
 
       // 3. For each folder, fetch its image files (in parallel, up to 10 folders)
       const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';

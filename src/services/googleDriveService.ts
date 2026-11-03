@@ -1,3 +1,5 @@
+import { mergeDriveRootChildren } from '../utils/driveDiscovery';
+
 /**
  * Google Drive Live Read Service
  * STRICTLY READ-ONLY: All API requests use HTTP GET. No create, upload, delete, or rename operations.
@@ -247,13 +249,21 @@ export async function fetchDriveTreeWithImages(
 
   // Direct client fetch fallback
   const folderQuery = `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
+  const sharedFolderQuery = `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
   const folderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`;
+  const sharedFolderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(sharedFolderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`;
 
-  const folderRes = await fetch(folderUrl, {
-    method: 'GET',
-    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
-  });
+  const [folderRes, sharedFolderRes] = await Promise.all([
+    fetch(folderUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+    }),
+    fetch(sharedFolderUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+    })
+  ]);
 
   if (!folderRes.ok) {
     const errText = await folderRes.text();
@@ -261,7 +271,12 @@ export async function fetchDriveTreeWithImages(
   }
 
   const folderData = await folderRes.json();
-  const rawFolders: any[] = folderData.files || [];
+  const sharedFolderData = sharedFolderRes.ok ? await sharedFolderRes.json() : { files: [] };
+  const rawFolders: any[] = mergeDriveRootChildren(
+    rootFolderId,
+    folderData.files || [],
+    sharedFolderData.files || []
+  );
 
   const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
   const foldersWithImages: FolderWithImages[] = await Promise.all(
@@ -316,5 +331,4 @@ export async function fetchDriveTreeWithImages(
     fetchedAt: new Date().toISOString()
   };
 }
-
 
