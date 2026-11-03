@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   createGoogleDriveReaderPermission,
+  createExpressApp,
   deleteGoogleDrivePermission,
   markGoogleDriveItemForApp,
   normalizeStore
@@ -80,6 +81,36 @@ test('server store hydration preserves durable Drive permission grants', () => {
   assert.deepEqual(store.drivePermissions, [permission]);
   assert.equal(store.people[0].Email, 'tanveer@empireonecx.com');
   assert.equal(store.people[0].Role, 'Admin');
+});
+
+test('local media uploads store real bytes and remain readable', async (t) => {
+  const app = createExpressApp();
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>((resolve, reject) => {
+    server.once('listening', resolve);
+    server.once('error', reject);
+  });
+  t.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
+
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  const origin = `http://127.0.0.1:${address.port}`;
+  const bytes = new Uint8Array([1, 3, 3, 7]);
+  const uploadResponse = await fetch(`${origin}/api/media/upload-local?filename=evidence.jpg`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/octet-stream' },
+    body: bytes
+  });
+  const upload = await uploadResponse.json() as { pathname: string; mediaUrl: string };
+  assert.equal(uploadResponse.status, 200);
+  assert.match(upload.pathname, /^engagement-app\/media\//);
+
+  const mediaResponse = await fetch(`${origin}${upload.mediaUrl}`);
+  assert.equal(mediaResponse.status, 200);
+  assert.deepEqual(new Uint8Array(await mediaResponse.arrayBuffer()), bytes);
+
+  const storedFile = path.join(process.cwd(), 'data', 'media', path.basename(upload.pathname));
+  if (fs.existsSync(storedFile)) fs.unlinkSync(storedFile);
 });
 
 test('server data persistence store maintains integrity', () => {

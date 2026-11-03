@@ -145,15 +145,16 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
 
     setIsSubmitting(true);
     try {
+      let result;
       if (editingId) {
-        await updateActivity(editingId, {
+        result = await updateActivity(editingId, {
           title: title.trim(),
           category,
           duration,
           notes: notes.trim()
         });
       } else {
-        await addActivity({
+        result = await addActivity({
           title: title.trim(),
           category,
           duration,
@@ -161,6 +162,11 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
           notes: notes.trim(),
           date: selectedDate
         });
+      }
+
+      if (!result.ok) {
+        alert(result.message);
+        return;
       }
 
       // Reset
@@ -186,7 +192,8 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
 
   const toggleActivityStatus = async (act: UserActivity) => {
     const nextStatus = act.status === 'Completed' ? 'In Progress' : 'Completed';
-    await updateActivity(act.id, { status: nextStatus });
+    const result = await updateActivity(act.id, { status: nextStatus });
+    if (!result.ok) alert(result.message);
   };
 
   return (
@@ -709,7 +716,10 @@ export const MyActivitiesView: React.FC<MyActivitiesViewProps> = ({ onNavigateTo
                       </button>
                       <button
                         type="button"
-                        onClick={() => deleteActivity(act.id)}
+                        onClick={async () => {
+                          const result = await deleteActivity(act.id);
+                          if (!result.ok) alert(result.message);
+                        }}
                         aria-label="Delete activity"
                         className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition cursor-pointer"
                       >

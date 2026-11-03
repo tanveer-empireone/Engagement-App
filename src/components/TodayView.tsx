@@ -114,19 +114,23 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
     setOpenTaskIds(new Set());
   };
 
-  const handleAcknowledge = (feedbackId: string, customReply?: string) => {
+  const handleAcknowledge = async (feedbackId: string, customReply?: string) => {
     const textToSend = customReply !== undefined ? customReply : (activeReplyId === feedbackId ? replyText : undefined);
-    acknowledgeDirection(feedbackId, textToSend);
+    const result = await acknowledgeDirection(feedbackId, textToSend);
+    if (!result.ok) {
+      alert(result.message);
+      return;
+    }
     if (activeReplyId === feedbackId) {
       setActiveReplyId(null);
       setReplyText('');
     }
   };
 
-  const handleAcknowledgeAll = () => {
-    unacknowledgedDirections.forEach((d) => {
-      acknowledgeDirection(d.feedbackId);
-    });
+  const handleAcknowledgeAll = async () => {
+    const results = await Promise.all(unacknowledgedDirections.map((d) => acknowledgeDirection(d.feedbackId)));
+    const failed = results.find((result) => !result.ok);
+    if (failed) alert(failed.message);
   };
 
   const allExpanded = publishedDirections.length > 0 && publishedDirections.every((d) => openTaskIds.has(d.feedbackId));
@@ -523,7 +527,10 @@ export const TodayView: React.FC<TodayViewProps> = ({ onNavigateToCapture, onNav
             </span>
           </div>
           <button
-            onClick={() => publishDirection(draftDirections[0].feedbackId)}
+            onClick={async () => {
+              const result = await publishDirection(draftDirections[0].feedbackId);
+              if (!result.ok) alert(result.message);
+            }}
             className="text-xs font-bold text-amber-900 bg-amber-200/70 hover:bg-amber-200 px-3 py-1 rounded-xl cursor-pointer"
           >
             Publish

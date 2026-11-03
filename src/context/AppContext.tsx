@@ -160,7 +160,7 @@ interface AppContextType {
   liveDriveData: Awaited<ReturnType<typeof fetchAllLiveDriveData>> | null;
 
   clickUpToken: string;
-  setClickUpToken: (token: string) => void;
+  setClickUpToken: (token: string) => Promise<ActionResult>;
   isClickUpConnected: boolean;
   isFetchingClickUp: boolean;
   liveClickUpData: Awaited<ReturnType<typeof fetchAllLiveClickUpData>> | null;
@@ -194,15 +194,15 @@ interface AppContextType {
   removeDirectoryUser: (email: string) => Promise<ActionResult>;
   setActiveShift: (shift: string) => Promise<ActionResult>;
 
-  updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => ActionResult;
-  deleteUpload: (id: string) => ActionResult;
-  deleteAllUploads: () => ActionResult;
-  updateDirection: (feedbackId: string, patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged' | 'toSite' | 'toAll'>>) => ActionResult;
-  deleteDirection: (feedbackId: string) => ActionResult;
-  deleteAllDirections: () => ActionResult;
-  updateShiftReport: (reportId: string, patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>) => ActionResult;
-  deleteShiftReport: (reportId: string) => ActionResult;
-  deleteAllShiftReports: () => ActionResult;
+  updateUpload: (id: string, patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>) => Promise<ActionResult>;
+  deleteUpload: (id: string) => Promise<ActionResult>;
+  deleteAllUploads: () => Promise<ActionResult>;
+  updateDirection: (feedbackId: string, patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged' | 'toSite' | 'toAll'>>) => Promise<ActionResult>;
+  deleteDirection: (feedbackId: string) => Promise<ActionResult>;
+  deleteAllDirections: () => Promise<ActionResult>;
+  updateShiftReport: (reportId: string, patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>) => Promise<ActionResult>;
+  deleteShiftReport: (reportId: string) => Promise<ActionResult>;
+  deleteAllShiftReports: () => Promise<ActionResult>;
 
   addBatchUploads: (filesData: Array<{
     site: string;
@@ -225,9 +225,9 @@ interface AppContextType {
     ext?: string;
     isCreativeWork?: boolean;
   }>) => Promise<UploadItem[]>;
-  reviewUpload: (id: string, decision: ReviewStatus, note?: string) => Promise<void>;
-  toggleUsedInFinal: (id: string) => void;
-  approveFinalCreative: (id: string) => void;
+  reviewUpload: (id: string, decision: ReviewStatus, note?: string) => Promise<ActionResult>;
+  toggleUsedInFinal: (id: string) => Promise<ActionResult>;
+  approveFinalCreative: (id: string) => Promise<ActionResult>;
   activities: UserActivity[];
   addActivity: (
     activity: Omit<UserActivity, 'id' | 'createdAt' | 'officerEmail' | 'officerName' | 'site' | 'shift'> &
@@ -235,14 +235,14 @@ interface AppContextType {
   ) => Promise<ActionResult>;
   updateActivity: (id: string, patch: Partial<UserActivity>) => Promise<ActionResult>;
   deleteActivity: (id: string) => Promise<ActionResult>;
-  acknowledgeDirection: (feedbackId: string, reply?: string) => void;
-  publishDirection: (feedbackId: string) => void;
-  addShiftReport: (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => void;
-  signOffReport: (reportId: string) => void;
+  acknowledgeDirection: (feedbackId: string, reply?: string) => Promise<ActionResult>;
+  publishDirection: (feedbackId: string) => Promise<ActionResult>;
+  addShiftReport: (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => Promise<ActionResult>;
+  signOffReport: (reportId: string) => Promise<ActionResult>;
   triggerManualSync: () => Promise<ConnectorReport[]>;
-  toggleSyncPause: () => void;
+  toggleSyncPause: () => Promise<ActionResult>;
   getTopPickRoom: (site: string, shift: string, mode: string, eventName?: string, dateStr?: string) => { used: number; limit: number; left: number };
-  resetToSampleData: () => void;
+  resetToSampleData: () => Promise<ActionResult>;
 
   drivePermissions: DrivePermissionGrant[];
   grantDrivePermission: (grant: {
@@ -376,6 +376,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     syncHealth: SyncHealth;
     clickUpToken: string;
     drivePermissions?: DrivePermissionGrant[];
+    syncLedger?: SyncLedgerEntry[];
+    syncLogs?: SyncLogEntry[];
   }>((data) => {
     if (Array.isArray(data.people) && data.people.length > 0) {
       const clean = sanitizeDirectory(data.people);
@@ -418,6 +420,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (data.syncHealth) {
         setSyncHealth((prev) => (JSON.stringify(prev) === JSON.stringify(data.syncHealth) ? prev : data.syncHealth));
       }
+      if (Array.isArray(data.syncLedger)) setSyncLedger(data.syncLedger);
+      if (Array.isArray(data.syncLogs)) setSyncLogs(data.syncLogs);
     }
   }, (error) => console.warn('Could not refresh server settings:', error)), [googleUser?.email]);
 
@@ -445,14 +449,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const canPublish = isWide;
   const canApproveCreative = canApproveFinalCreative(currentUser);
 
-  const setClickUpToken = (tok: string) => {
-    setClickUpTokenState(tok);
-    saveStoredClickUpToken(tok);
-    fetch('/api/config/clickup-token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ token: tok })
-    }).catch((err) => console.error('Failed to save ClickUp token to server:', err));
+  const setClickUpToken = async (tok: string): Promise<ActionResult> => {
+    try {
+      await saveServerSettings('/api/config/clickup-token', 'POST', { token: tok });
+      setClickUpTokenState(tok);
+      saveStoredClickUpToken(tok);
+      window.dispatchEvent(new Event('app-settings-saved'));
+      return { ok: true, message: tok ? 'ClickUp token saved to server.' : 'ClickUp token removed.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save ClickUp token.' };
+    }
   };
 
   const denyAdmin = (): ActionResult => ({
@@ -592,24 +598,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return sanitizeDirectory(merged);
         });
 
-        // Save imported sheet roster to server
-        fetch('/api/session/sync-sheet-roster', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: JSON.stringify({ people: result.people })
-        })
-          .then((res) => {
-            if (!res.ok || !res.headers.get('content-type')?.includes('application/json')) return null;
-            return res.json();
-          })
-          .then((data) => {
-            if (data?.people && Array.isArray(data.people) && data.people.length > 0) {
-              const clean = sanitizeDirectory(data.people);
-              setPeople(clean);
-              persistCachedPeople(clean);
-            }
-          })
-          .catch((err) => console.warn('Failed to persist sheet roster to server:', err));
+        const synced = await saveServerSettings<{ people: Person[] }>('/api/session/sync-sheet-roster', 'POST', {
+          people: result.people
+        });
+        if (Array.isArray(synced.people) && synced.people.length > 0) {
+          const clean = sanitizeDirectory(synced.people);
+          setPeople(clean);
+          persistCachedPeople(clean);
+        }
       }
 
       const detail = `Read “${result.spreadsheetTitle}” (${result.availableTabs.length} tabs, ${result.people.length} roster rows, ${result.uploads.length} uploads). Nothing was written back to the sheet.`;
@@ -864,138 +860,101 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     }
 
-    setUploads((prev) => [...created, ...prev]);
-    fetch('/api/uploads/batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ items: created })
-    }).catch((err) => console.error('Failed to save batch uploads to server:', err));
+    const data = await saveServerSettings<{ uploads: UploadItem[] }>('/api/uploads/batch', 'POST', { items: created });
+    setUploads(data.uploads);
+    window.dispatchEvent(new Event('app-settings-saved'));
     return created;
   };
 
-  const reviewUpload = async (id: string, decision: ReviewStatus, note?: string) => {
-    if (!currentUser) return;
+  const reviewUpload = async (id: string, decision: ReviewStatus, note?: string): Promise<ActionResult> => {
+    if (!currentUser) return { ok: false, message: 'You must be signed in to review media.' };
     const target = uploads.find((u) => u.id === id);
-    if (!target) return;
+    if (!target) return { ok: false, message: 'That upload was not found.' };
 
     const now = new Date().toISOString();
-    setUploads((prev) =>
-      prev.map((u) => {
-        if (u.id !== id) return u;
-        return {
-          ...u,
-          reviewStatus: decision,
-          reviewNote: note || u.reviewNote,
-          reviewedBy: currentUser.Email,
-          reviewedAt: now,
-          topPick: decision === 'Top pick' ? true : u.topPick
-        };
-      })
-    );
-
-    fetch('/api/uploads/review', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>('/api/uploads/review', 'POST', {
         id,
         decision,
         note: note || target.reviewNote,
         reviewedBy: currentUser.Email
-      })
-    }).catch((err) => console.error('Failed to save upload review to server:', err));
+      });
+      setUploads(data.uploads);
+      window.dispatchEvent(new Event('app-settings-saved'));
 
-    if (decision === 'Reshoot' || decision === 'Top pick') {
-      setSyncLogs((prev) => [
-        {
-          id: Math.random().toString(),
-          time: now,
-          stage: 'followups',
-          state: 'Info',
-          detail: `${decision} for ${id} was saved to the server. ClickUp was not updated because this app has no ClickUp write client.`
-        },
-        ...prev
-      ]);
+      if (decision === 'Reshoot' || decision === 'Top pick') {
+        setSyncLogs((prev) => [
+          {
+            id: Math.random().toString(),
+            time: now,
+            stage: 'followups',
+            state: 'Info',
+            detail: `${decision} for ${id} was saved to the server. ClickUp was not updated because this app has no ClickUp write client.`
+          },
+          ...prev
+        ]);
+      }
+      return { ok: true, message: `Marked ${id} as ${decision}.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save media review.' };
     }
   };
 
-  const toggleUsedInFinal = (id: string) => {
-    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, usedInFinal: !u.usedInFinal } : u)));
-    fetch('/api/uploads/toggle-final', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id })
-    }).catch((err) => console.error('Failed to toggle final on server:', err));
+  const toggleUsedInFinal = async (id: string): Promise<ActionResult> => {
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>('/api/uploads/toggle-final', 'POST', { id });
+      setUploads(data.uploads);
+      return { ok: true, message: 'Final-use status saved.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save final-use status.' };
+    }
   };
 
-  const approveFinalCreative = (id: string) => {
-    if (!currentUser || (!isTechnicalAdmin && !isDirector)) return;
+  const approveFinalCreative = async (id: string): Promise<ActionResult> => {
+    if (!currentUser || (!isTechnicalAdmin && !isDirector)) return denyAdmin();
     const now = new Date().toISOString();
-    setUploads((prev) =>
-      prev.map((u) =>
-        u.id === id
-          ? {
-              ...u,
-              usedInFinal: true,
-              creativeApprovedBy: currentUser.Email,
-              creativeApprovedAt: now
-            }
-          : u
-      )
-    );
-    fetch('/api/uploads/toggle-final', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>('/api/uploads/toggle-final', 'POST', {
         id,
         usedInFinal: true,
         creativeApprovedBy: currentUser.Email,
         creativeApprovedAt: now
-      })
-    }).catch((err) => console.error('Failed to save final creative approval on server:', err));
+      });
+      setUploads(data.uploads);
+      return { ok: true, message: `Final creative approval saved for ${id}.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save final approval.' };
+    }
   };
 
-  const acknowledgeDirection = (feedbackId: string, reply?: string) => {
-    if (!currentUser) return;
+  const acknowledgeDirection = async (feedbackId: string, reply?: string): Promise<ActionResult> => {
+    if (!currentUser) return { ok: false, message: 'You must be signed in to acknowledge a direction.' };
     const now = new Date().toISOString();
-    saveLocalAck(currentUser.Email, feedbackId, reply);
-
     const targetDir = directions.find((d) => d.feedbackId === feedbackId);
-
-    setDirections((prev) =>
-      prev.map((d) => {
-        if (d.feedbackId !== feedbackId) return d;
-        const list = d.acknowledgedBy || [];
-        return {
-          ...d,
-          acknowledged: true,
-          acknowledgedAt: now,
-          acknowledgedBy: Array.from(new Set([...list, currentUser.Email])),
-          reply: reply || d.reply
-        };
-      })
-    );
-
-    fetch('/api/directions/acknowledge', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
+    try {
+      const data = await saveServerSettings<{ directions: DirectionMessage[] }>('/api/directions/acknowledge', 'POST', {
         feedbackId,
         email: currentUser.Email,
         reply,
         direction: targetDir ? { ...targetDir, acknowledged: true, acknowledgedAt: now } : undefined
-      })
-    }).catch((err) => console.error('Failed to save direction acknowledgment to server:', err));
+      });
+      saveLocalAck(currentUser.Email, feedbackId, reply);
+      setDirections(applyAckMap(data.directions, currentUser.Email));
 
-    setSyncLogs((prev) => [
-      {
-        id: Math.random().toString(),
-        time: now,
-        stage: 'directions',
-        state: 'OK',
-        detail: `${currentUser.Name} acknowledged task ${feedbackId}.`
-      },
-      ...prev
-    ]);
+      setSyncLogs((prev) => [
+        {
+          id: Math.random().toString(),
+          time: now,
+          stage: 'directions',
+          state: 'OK',
+          detail: `${currentUser.Name} acknowledged task ${feedbackId}.`
+        },
+        ...prev
+      ]);
+      return { ok: true, message: 'Direction acknowledged.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save acknowledgment.' };
+    }
   };
 
   const addActivity = async (
@@ -1015,37 +974,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       date: input.date || now.slice(0, 10)
     };
 
-    setActivities((prev) => [newActivity, ...prev]);
-
     try {
-      const res = await fetch('/api/activities', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ activity: newActivity })
-      });
-      const data = await res.json();
-      if (data?.ok && Array.isArray(data.activities)) {
-        setActivities(data.activities);
-      }
+      const data = await saveServerSettings<{ activities: UserActivity[] }>('/api/activities', 'POST', { activity: newActivity });
+      setActivities(data.activities);
       return { ok: true, message: 'Activity logged successfully.' };
-    } catch (err: unknown) {
-      console.warn('Failed to save activity to server, kept locally:', err);
-      return { ok: true, message: 'Activity saved locally.' };
+    } catch (error: unknown) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save activity.' };
     }
   };
 
   const updateActivity = async (id: string, patch: Partial<UserActivity>): Promise<ActionResult> => {
-    setActivities((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, ...patch, updatedAt: new Date().toISOString() } : a))
-    );
     try {
       const target = activities.find((a) => a.id === id);
       if (target) {
-        await fetch('/api/activities', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ activity: { ...target, ...patch } })
+        const data = await saveServerSettings<{ activities: UserActivity[] }>('/api/activities', 'POST', {
+          activity: { ...target, ...patch, updatedAt: new Date().toISOString() }
         });
+        setActivities(data.activities);
       }
       return { ok: true, message: 'Activity updated.' };
     } catch (err: unknown) {
@@ -1054,60 +999,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const deleteActivity = async (id: string): Promise<ActionResult> => {
-    setActivities((prev) => prev.filter((a) => a.id !== id));
     try {
-      await fetch(`/api/activities/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await saveServerSettings<{ activities: UserActivity[] }>(`/api/activities/${encodeURIComponent(id)}`, 'DELETE');
+      setActivities(data.activities);
       return { ok: true, message: 'Activity deleted.' };
-    } catch (err: unknown) {
-      return { ok: true, message: 'Activity deleted locally.' };
+    } catch (error: unknown) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete activity.' };
     }
   };
 
-  const publishDirection = (feedbackId: string) => {
-    if (!canPublish || !currentUser) return;
+  const publishDirection = async (feedbackId: string): Promise<ActionResult> => {
+    if (!canPublish || !currentUser) return denyAdmin();
     const now = new Date().toISOString();
-    setDirections((prev) =>
-      prev.map((d) => (d.feedbackId === feedbackId ? { ...d, status: 'Published', sentAt: now } : d))
-    );
-    fetch('/api/directions/publish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ feedbackId })
-    }).catch((err) => console.error('Failed to publish direction to server:', err));
+    try {
+      const data = await saveServerSettings<{ directions: DirectionMessage[] }>('/api/directions/publish', 'POST', { feedbackId });
+      setDirections(data.directions);
 
-    setSyncLogs((prev) => [
-      {
-        id: Math.random().toString(),
-        time: now,
-        stage: 'directions',
-        state: 'OK',
-        detail: `${currentUser.Name} published direction ${feedbackId} on the server.`
-      },
-      ...prev
-    ]);
+      setSyncLogs((prev) => [
+        {
+          id: Math.random().toString(),
+          time: now,
+          stage: 'directions',
+          state: 'OK',
+          detail: `${currentUser.Name} published direction ${feedbackId} on the server.`
+        },
+        ...prev
+      ]);
+      return { ok: true, message: 'Direction published.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not publish direction.' };
+    }
   };
 
-  const addShiftReport = (report: Omit<ShiftReport, 'reportId' | 'isLate'>) => {
+  const addShiftReport = async (report: Omit<ShiftReport, 'reportId' | 'isLate'>): Promise<ActionResult> => {
     const siteMeta = sites.find((s) => s.SiteName === report.site) || sites[0];
     const reportId = `REP-${formatYmdClean(new Date())}-${siteMeta.Code}-${String(shiftReports.length + 1).padStart(2, '0')}`;
     const newReport: ShiftReport = { ...report, reportId, isLate: false };
-    setShiftReports((prev) => [newReport, ...prev]);
-    fetch('/api/reports', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ report: newReport })
-    }).catch((err) => console.error('Failed to save shift report to server:', err));
+    try {
+      const data = await saveServerSettings<{ shiftReports: ShiftReport[] }>('/api/reports', 'POST', { report: newReport });
+      setShiftReports(data.shiftReports);
+      return { ok: true, message: 'Shift report saved.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save shift report.' };
+    }
   };
 
-  const signOffReport = (reportId: string) => {
-    setShiftReports((prev) =>
-      prev.map((r) => (r.reportId === reportId ? { ...r, signedOff: true, verified: true } : r))
-    );
-    fetch('/api/reports/sign-off', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ reportId })
-    }).catch((err) => console.error('Failed to sign off report on server:', err));
+  const signOffReport = async (reportId: string): Promise<ActionResult> => {
+    try {
+      const data = await saveServerSettings<{ shiftReports: ShiftReport[] }>('/api/reports/sign-off', 'POST', { reportId });
+      setShiftReports(data.shiftReports);
+      return { ok: true, message: 'Report signed off.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not sign off report.' };
+    }
   };
 
   const triggerManualSync = async (): Promise<ConnectorReport[]> => {
@@ -1115,8 +1059,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const report = await Promise.all([fetchLiveSheets(), fetchLiveDrive(), fetchLiveClickUp()]);
     setLastSyncReport(report);
     const problems = report.filter((item) => item.state !== 'OK');
-    setSyncHealth((prev) => ({
-      ...prev,
+    const nextHealth: SyncHealth = {
+      ...syncHealth,
       lastSync: now,
       syncState: problems.length ? 'Error' : 'OK',
       stages: [
@@ -1124,8 +1068,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         { name: 'drive', state: report[1].state === 'OK' ? 'OK' : 'Error', at: now, detail: report[1].detail },
         { name: 'clickup', state: report[2].state === 'OK' ? 'OK' : 'Error', at: now, detail: report[2].detail }
       ]
-    }));
-    setSyncLogs((prev) => [
+    };
+    const nextLogs: SyncLogEntry[] = [
       {
         id: Math.random().toString(),
         time: now,
@@ -1135,33 +1079,58 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           ? `Read sync finished with problems: ${problems.map((item) => `${item.name} (${item.state})`).join('; ')}.`
           : 'Read sync finished for Sheets, Drive, and ClickUp. No remote records were written.'
       },
-      ...prev
-    ]);
+      ...syncLogs
+    ];
+    try {
+      await saveServerSettings('/api/admin/sync-state', 'POST', {
+        syncHealth: nextHealth,
+        syncLedger,
+        syncLogs: nextLogs
+      });
+      setSyncHealth(nextHealth);
+      setSyncLogs(nextLogs);
+    } catch (error) {
+      setLiveError(error instanceof Error ? error.message : 'Could not persist sync status.');
+    }
     if (problems.length) {
       setLiveError(problems.map((item) => `${item.name}: ${item.detail}`).join(' '));
     }
     return report;
   };
 
-  const toggleSyncPause = () => {
-    if (!isAdmin) return;
-    setSyncHealth((prev) => ({ ...prev, paused: !prev.paused }));
+  const toggleSyncPause = async (): Promise<ActionResult> => {
+    if (!isAdmin) return denyAdmin();
+    const nextHealth = { ...syncHealth, paused: !syncHealth.paused };
+    try {
+      const data = await saveServerSettings<{ syncHealth: SyncHealth }>('/api/admin/sync-state', 'POST', {
+        syncHealth: nextHealth,
+        syncLedger,
+        syncLogs
+      });
+      setSyncHealth(data.syncHealth);
+      return { ok: true, message: data.syncHealth.paused ? 'Sync paused.' : 'Sync resumed.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not save sync state.' };
+    }
   };
 
-  const resetToSampleData = () => {
-    if (!isAdmin) return;
-    setUploads(INITIAL_UPLOADS);
-    setDirections(INITIAL_DIRECTIONS);
-    setShiftReports(INITIAL_REPORTS);
-    setSyncHealth(INITIAL_SYNC_HEALTH);
-    setSyncLedger(INITIAL_LEDGER);
-    setSyncLogs(INITIAL_LOGS);
-    setLiveSheetsMeta(null);
-    setLiveDriveData(null);
-    fetch('/api/admin/reset-sample', {
-      method: 'POST'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to reset sample data on server:', err));
+  const resetToSampleData = async (): Promise<ActionResult> => {
+    if (!isAdmin) return denyAdmin();
+    try {
+      await saveServerSettings('/api/admin/reset-sample', 'POST');
+      setUploads(INITIAL_UPLOADS);
+      setDirections(INITIAL_DIRECTIONS);
+      setShiftReports(INITIAL_REPORTS);
+      setSyncHealth(INITIAL_SYNC_HEALTH);
+      setSyncLedger(INITIAL_LEDGER);
+      setSyncLogs(INITIAL_LOGS);
+      setLiveSheetsMeta(null);
+      setLiveDriveData(null);
+      window.dispatchEvent(new Event('app-settings-saved'));
+      return { ok: true, message: 'Server data reset.' };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not reset server data.' };
+    }
   };
 
   const updateAppConfig = async (patch: Partial<AppIntegrationConfig>): Promise<ActionResult> => {
@@ -1188,10 +1157,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { ok: true, message: data.message || 'Access saved. Active sessions update within five seconds.' };
     } catch (error) {
       console.warn('Server save warning:', error);
-      // Return ok: true because the action was already safely applied to local state and cached in localStorage
       return {
-        ok: true,
-        message: 'Saved to your device roster. (Server sync will update when backend connection is active).'
+        ok: false,
+        message: error instanceof Error ? error.message : 'Could not save roster change to the server.'
       };
     }
   };
@@ -1218,11 +1186,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       Active: true
     };
 
-    const updated = sanitizeDirectory([...people, newPerson]);
-    setPeople(updated);
-    persistCachedPeople(updated);
-
     const serverResult = await saveDirectory('/api/admin/users', 'POST', input);
+    if (!serverResult.ok) return serverResult;
 
     // Save to Google Sheet directly if Google session is active
     let sheetNote = '';
@@ -1268,22 +1233,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { ok: false, message: 'That person is not on the roster.' };
     }
 
-    const updated = sanitizeDirectory(
-      people.map((p) => {
-        if (normalizeEmail(p.Email) !== key) return p;
-        return {
-          ...p,
-          ...patch,
-          Email: p.Email,
-          Role: key === 'tanveer@empireonecx.com' ? 'Admin' : (patch.Role || p.Role),
-          Active: key === 'tanveer@empireonecx.com' ? true : (patch.Active !== undefined ? Boolean(patch.Active) : p.Active)
-        };
-      })
-    );
-    setPeople(updated);
-    persistCachedPeople(updated);
-
     const serverResult = await saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'PUT', patch);
+    if (!serverResult.ok) return serverResult;
 
     const token = googleToken || (await getAccessToken());
     if (token && appConfig.sheetId) {
@@ -1314,13 +1265,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { ok: false, message: 'You cannot remove the primary admin account.' };
     }
 
-    const updated = sanitizeDirectory(
-      people.map((p) => (normalizeEmail(p.Email) === normalizeEmail(email) ? { ...p, Active: false } : p))
-    );
-    setPeople(updated);
-    persistCachedPeople(updated);
-
     const serverResult = await saveDirectory(`/api/admin/users/${encodeURIComponent(email)}`, 'DELETE');
+    if (!serverResult.ok) return serverResult;
 
     const token = googleToken || (await getAccessToken());
     if (token && appConfig.sheetId) {
@@ -1334,134 +1280,128 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return serverResult;
   };
 
-  const updateUpload = (
+  const updateUpload = async (
     id: string,
     patch: Partial<Pick<UploadItem, 'note' | 'reviewStatus' | 'reviewNote' | 'topPick' | 'site' | 'topic' | 'spot'>>
-  ): ActionResult => {
+  ): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     if (!uploads.some((u) => u.id === id)) {
       return { ok: false, message: 'That upload is not on the server.' };
     }
-    setUploads((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
-    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch)
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to update upload on server:', err));
-
-    return { ok: true, message: `Updated upload ${id} on the server.` };
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>(`/api/admin/records/upload/${encodeURIComponent(id)}`, 'PUT', patch);
+      setUploads(data.uploads);
+      return { ok: true, message: `Updated upload ${id} on the server.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not update upload.' };
+    }
   };
 
-  const deleteUpload = (id: string): ActionResult => {
+  const deleteUpload = async (id: string): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const found = uploads.some((u) => u.id === id);
     if (!found) return { ok: false, message: 'That upload is not on the server.' };
-    setUploads((prev) => prev.filter((u) => u.id !== id));
-    fetch(`/api/admin/records/upload/${encodeURIComponent(id)}`, {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete upload on server:', err));
-
-    return { ok: true, message: `Deleted upload ${id} from server. The file was not deleted from Google Drive.` };
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>(`/api/admin/records/upload/${encodeURIComponent(id)}`, 'DELETE');
+      setUploads(data.uploads);
+      return { ok: true, message: `Deleted upload ${id} from server. The media file was not deleted.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete upload.' };
+    }
   };
 
-  const deleteAllUploads = (): ActionResult => {
+  const deleteAllUploads = async (): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const count = uploads.length;
-    setUploads([]);
-    fetch('/api/admin/records/uploads', {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete all uploads on server:', err));
-
-    return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from server. Drive files were not touched.` };
+    try {
+      const data = await saveServerSettings<{ uploads: UploadItem[] }>('/api/admin/records/uploads', 'DELETE');
+      setUploads(data.uploads);
+      return { ok: true, message: `Deleted ${count} upload record${count === 1 ? '' : 's'} from server. Media files were not touched.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete uploads.' };
+    }
   };
 
-  const updateDirection = (
+  const updateDirection = async (
     feedbackId: string,
     patch: Partial<Pick<DirectionMessage, 'title' | 'message' | 'status' | 'acknowledged' | 'toSite' | 'toAll'>>
-  ): ActionResult => {
+  ): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const found = directions.some((d) => d.feedbackId === feedbackId);
     if (!found) return { ok: false, message: 'That direction is not on the server.' };
-    setDirections((prev) => prev.map((d) => (d.feedbackId === feedbackId ? { ...d, ...patch } : d)));
-    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch)
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to update direction on server:', err));
-
-    return { ok: true, message: `Updated direction ${feedbackId} on the server.` };
+    try {
+      const data = await saveServerSettings<{ directions: DirectionMessage[] }>(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, 'PUT', patch);
+      setDirections(data.directions);
+      return { ok: true, message: `Updated direction ${feedbackId} on the server.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not update direction.' };
+    }
   };
 
-  const deleteDirection = (feedbackId: string): ActionResult => {
+  const deleteDirection = async (feedbackId: string): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const found = directions.some((d) => d.feedbackId === feedbackId);
     if (!found) return { ok: false, message: 'That direction is not on the server.' };
-    setDirections((prev) => prev.filter((d) => d.feedbackId !== feedbackId));
-    fetch(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete direction on server:', err));
-
-    return { ok: true, message: `Deleted direction ${feedbackId} from server. ClickUp was not changed.` };
+    try {
+      const data = await saveServerSettings<{ directions: DirectionMessage[] }>(`/api/admin/records/direction/${encodeURIComponent(feedbackId)}`, 'DELETE');
+      setDirections(data.directions);
+      return { ok: true, message: `Deleted direction ${feedbackId} from server. ClickUp was not changed.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete direction.' };
+    }
   };
 
-  const deleteAllDirections = (): ActionResult => {
+  const deleteAllDirections = async (): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const count = directions.length;
-    setDirections([]);
-    fetch('/api/admin/records/directions', {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete all directions on server:', err));
-
-    return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from server. ClickUp was not changed.` };
+    try {
+      const data = await saveServerSettings<{ directions: DirectionMessage[] }>('/api/admin/records/directions', 'DELETE');
+      setDirections(data.directions);
+      return { ok: true, message: `Deleted ${count} direction${count === 1 ? '' : 's'} from server. ClickUp was not changed.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete directions.' };
+    }
   };
 
-  const updateShiftReport = (
+  const updateShiftReport = async (
     reportId: string,
     patch: Partial<Pick<ShiftReport, 'engagementDone' | 'notes' | 'verified' | 'signedOff' | 'hoursWorked'>>
-  ): ActionResult => {
+  ): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const found = shiftReports.some((r) => r.reportId === reportId);
     if (!found) return { ok: false, message: 'That report is not on the server.' };
-    setShiftReports((prev) => prev.map((r) => (r.reportId === reportId ? { ...r, ...patch } : r)));
-    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch)
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to update report on server:', err));
-
-    return { ok: true, message: `Updated report ${reportId} on the server.` };
+    try {
+      const data = await saveServerSettings<{ shiftReports: ShiftReport[] }>(`/api/admin/records/report/${encodeURIComponent(reportId)}`, 'PUT', patch);
+      setShiftReports(data.shiftReports);
+      return { ok: true, message: `Updated report ${reportId} on the server.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not update report.' };
+    }
   };
 
-  const deleteShiftReport = (reportId: string): ActionResult => {
+  const deleteShiftReport = async (reportId: string): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const found = shiftReports.some((r) => r.reportId === reportId);
     if (!found) return { ok: false, message: 'That report is not on the server.' };
-    setShiftReports((prev) => prev.filter((r) => r.reportId !== reportId));
-    fetch(`/api/admin/records/report/${encodeURIComponent(reportId)}`, {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete report on server:', err));
-
-    return { ok: true, message: `Deleted report ${reportId} from server.` };
+    try {
+      const data = await saveServerSettings<{ shiftReports: ShiftReport[] }>(`/api/admin/records/report/${encodeURIComponent(reportId)}`, 'DELETE');
+      setShiftReports(data.shiftReports);
+      return { ok: true, message: `Deleted report ${reportId} from server.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete report.' };
+    }
   };
 
-  const deleteAllShiftReports = (): ActionResult => {
+  const deleteAllShiftReports = async (): Promise<ActionResult> => {
     if (!isAdmin) return denyAdmin();
     const count = shiftReports.length;
-    setShiftReports([]);
-    fetch('/api/admin/records/reports', {
-      method: 'DELETE'
-    }).then(() => window.dispatchEvent(new Event('app-settings-saved')))
-      .catch((err) => console.error('Failed to delete all reports on server:', err));
-
-    return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from server.` };
+    try {
+      const data = await saveServerSettings<{ shiftReports: ShiftReport[] }>('/api/admin/records/reports', 'DELETE');
+      setShiftReports(data.shiftReports);
+      return { ok: true, message: `Deleted ${count} shift report${count === 1 ? '' : 's'} from server.` };
+    } catch (error) {
+      return { ok: false, message: error instanceof Error ? error.message : 'Could not delete reports.' };
+    }
   };
 
   const grantDrivePermission = async (grant: {
@@ -1503,10 +1443,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const revokeDrivePermission = async (id: string): Promise<ActionResult> => {
-    // Optimistically remove locally immediately
-    setDrivePermissions((prev) => prev.filter((p) => p.id !== id));
-    window.dispatchEvent(new Event('app-settings-saved'));
-
     try {
       const token = googleToken || (await getAccessToken());
       if (!token) return { ok: false, message: 'Reconnect Google Drive, then try revoking access again.' };

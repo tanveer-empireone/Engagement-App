@@ -19,6 +19,7 @@ interface StagedFile {
   url: string;
   top: boolean;
   done: boolean;
+  file: File;
 }
 
 const QUICK_TOPICS = [
@@ -68,7 +69,8 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         type: f.type,
         url: URL.createObjectURL(f),
         top: false,
-        done: false
+        done: false,
+        file: f
       });
     }
     setStagedFiles((prev) => [...prev, ...newItems]);
@@ -104,8 +106,36 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
     setWarningMessage(null);
     try {
       const todayYmd = new Date().toISOString().slice(0, 10);
+      const durableMedia = [] as Array<{ staged: StagedFile; mediaUrl: string }>;
+      for (const staged of pending) {
+        const safeName = staged.name.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-120) || 'media.bin';
+        if (import.meta.env.PROD) {
+          const { upload } = await import('@vercel/blob/client');
+          const blob = await upload(`engagement-app/media/${Date.now()}-${safeName}`, staged.file, {
+            access: 'private',
+            handleUploadUrl: '/api/media/upload-token',
+            contentType: staged.type || 'application/octet-stream',
+            multipart: staged.size > 4 * 1024 * 1024
+          });
+          durableMedia.push({
+            staged,
+            mediaUrl: `/api/media/content?path=${encodeURIComponent(blob.pathname)}`
+          });
+        } else {
+          const response = await fetch(`/api/media/upload-local?filename=${encodeURIComponent(safeName)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: staged.file
+          });
+          const data = await response.json().catch(() => null);
+          if (!response.ok || !data?.mediaUrl) {
+            throw new Error(data?.message || `Media upload failed (HTTP ${response.status}).`);
+          }
+          durableMedia.push({ staged, mediaUrl: data.mediaUrl });
+        }
+      }
       await addBatchUploads(
-        pending.map((f) => ({
+        durableMedia.map(({ staged: f, mediaUrl }) => ({
           site,
           shift,
           mode: isEventMode ? 'Event' : 'Daily',
@@ -114,7 +144,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
           topic,
           spot: 'Production floor',
           mediaType: f.type.startsWith('video/') ? 'Video' : 'Photo',
-          mediaUrl: f.url,
+          mediaUrl,
           fileSizeBytes: f.size,
           capturedAt: new Date().toISOString(),
           note: note || `${topic} capture`,
@@ -126,6 +156,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
       );
 
       setStagedFiles((prev) => prev.map((f) => ({ ...f, done: true })));
+      pending.forEach((file) => URL.revokeObjectURL(file.url));
       setUploadSuccess(true);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

@@ -64,7 +64,11 @@ export const ConnectionView: React.FC = () => {
     setTestingClickUp(true);
     setClickUpTestMsg(null);
     try {
-      setClickUpToken(inputClickUpToken.trim());
+      const saved = await setClickUpToken(inputClickUpToken.trim());
+      if (!saved.ok) {
+        setClickUpTestMsg({ success: false, text: saved.message });
+        return;
+      }
       const res = await testClickUpToken(inputClickUpToken.trim());
       setClickUpTestMsg({ success: res.success, text: res.message });
       if (res.success) {

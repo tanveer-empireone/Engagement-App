@@ -36,14 +36,15 @@ export const ReviewQueueView: React.FC = () => {
   });
 
   const handleDecision = async (id: string, status: ReviewStatus, note?: string) => {
-    await reviewUpload(id, status, note);
-    setNotification(`Marked ${id} as ${status} (saved to server).`);
+    const result = await reviewUpload(id, status, note);
+    setNotification(result.message);
     setTimeout(() => setNotification(null), 3500);
+    return result.ok;
   };
 
-  const handleFinalApproval = (id: string) => {
-    approveFinalCreative(id);
-    setNotification(`Granted Director Final Creative Approval for ${id} (saved to server).`);
+  const handleFinalApproval = async (id: string) => {
+    const result = await approveFinalCreative(id);
+    setNotification(result.message);
     setTimeout(() => setNotification(null), 3500);
   };
 
@@ -58,8 +59,9 @@ export const ReviewQueueView: React.FC = () => {
       alert('Please explain what needs to be fixed in the reshoot feedback note.');
       return;
     }
-    await handleDecision(reshootModalItem.id, 'Reshoot', reshootNote.trim());
-    setReshootModalItem(null);
+    if (await handleDecision(reshootModalItem.id, 'Reshoot', reshootNote.trim())) {
+      setReshootModalItem(null);
+    }
   };
 
   if (!canReview) {

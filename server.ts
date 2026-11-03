@@ -1,8 +1,10 @@
+import 'express-async-errors';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import { get as getBlob, put as putBlob } from '@vercel/blob';
+import { BlobPreconditionFailedError, get as getBlob, put as putBlob } from '@vercel/blob';
+import { handleUpload } from '@vercel/blob/client';
 import { mergeDriveRootChildren } from './src/utils/driveDiscovery.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -10,6 +12,7 @@ const __dirname = path.dirname(__filename);
 
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
+const LOCAL_MEDIA_DIR = path.join(DATA_DIR, 'media');
 const BLOB_STATE_PATH = 'engagement-app/server-state.json';
 const USE_BLOB_STORE = Boolean(process.env.VERCEL && process.env.BLOB_READ_WRITE_TOKEN);
 
@@ -57,6 +60,8 @@ export interface ServerStore {
   syncHealth: any;
   clickUpToken: string;
   drivePermissions?: DrivePermissionGrant[];
+  syncLedger?: any[];
+  syncLogs?: any[];
 }
 
 const INITIAL_STORE: ServerStore = {
@@ -174,7 +179,9 @@ const INITIAL_STORE: ServerStore = {
     stages: []
   },
   clickUpToken: '',
-  drivePermissions: []
+  drivePermissions: [],
+  syncLedger: [],
+  syncLogs: []
 };
 
 function normalizeEmail(email: string | null | undefined): string {
@@ -296,8 +303,18 @@ function isLegacyDummyDirection(d: any): boolean {
   return false;
 }
 
+function appendSyncLog(store: ServerStore, stage: string, state: 'OK' | 'Error' | 'Info', detail: string): void {
+  const entries = Array.isArray(store.syncLogs) ? store.syncLogs : [];
+  store.syncLogs = [
+    { id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`, time: new Date().toISOString(), stage, state, detail },
+    ...entries
+  ].slice(0, 200);
+}
+
 let remoteStoreCache: ServerStore | null = null;
 let remoteWriteQueue: Promise<void> = Promise.resolve();
+let remoteStoreEtag: string | null = null;
+const remoteStoreVersions = new WeakMap<ServerStore, string | null>();
 
 export function normalizeStore(parsed: any): ServerStore {
   const peopleList: PersonRecord[] = Array.isArray(parsed?.people)
@@ -331,24 +348,32 @@ export function normalizeStore(parsed: any): ServerStore {
       ? parsed.syncHealth
       : structuredClone(INITIAL_STORE.syncHealth),
     clickUpToken: typeof parsed?.clickUpToken === 'string' ? parsed.clickUpToken : '',
-    drivePermissions: Array.isArray(parsed?.drivePermissions) ? parsed.drivePermissions : []
+    drivePermissions: Array.isArray(parsed?.drivePermissions) ? parsed.drivePermissions : [],
+    syncLedger: Array.isArray(parsed?.syncLedger) ? parsed.syncLedger : [],
+    syncLogs: Array.isArray(parsed?.syncLogs) ? parsed.syncLogs : []
   };
 }
 
 async function hydrateRemoteStore(): Promise<void> {
   if (!USE_BLOB_STORE) return;
-  await remoteWriteQueue;
+  await remoteWriteQueue.catch(() => undefined);
   const result = await getBlob(BLOB_STATE_PATH, { access: 'private', useCache: false });
   if (!result) {
     remoteStoreCache = structuredClone(INITIAL_STORE);
+    remoteStoreVersions.set(remoteStoreCache, null);
     await writeStore(remoteStoreCache);
     return;
   }
   const raw = await new Response(result.stream).text();
   remoteStoreCache = normalizeStore(JSON.parse(raw));
+  remoteStoreEtag = result.blob.etag;
+  remoteStoreVersions.set(remoteStoreCache, remoteStoreEtag);
 }
 
 function readStore(): ServerStore {
+  if (process.env.VERCEL && !USE_BLOB_STORE) {
+    throw new Error('Persistent storage is unavailable: BLOB_READ_WRITE_TOKEN is not configured.');
+  }
   if (USE_BLOB_STORE) {
     return remoteStoreCache || structuredClone(INITIAL_STORE);
   }
@@ -370,16 +395,34 @@ function readStore(): ServerStore {
 }
 
 async function writeStore(store: ServerStore): Promise<void> {
+  if (process.env.VERCEL && !USE_BLOB_STORE) {
+    throw new Error('Persistent storage is unavailable: BLOB_READ_WRITE_TOKEN is not configured.');
+  }
   if (USE_BLOB_STORE) {
-    remoteStoreCache = structuredClone(store);
-    const serialized = JSON.stringify(remoteStoreCache, null, 2);
-    remoteWriteQueue = remoteWriteQueue.then(async () => {
-      await putBlob(BLOB_STATE_PATH, serialized, {
-        access: 'private',
-        addRandomSuffix: false,
-        allowOverwrite: true,
-        contentType: 'application/json'
-      });
+    const expectedEtag = remoteStoreVersions.has(store) ? remoteStoreVersions.get(store)! : remoteStoreEtag;
+    const pendingStore = structuredClone(store);
+    remoteStoreCache = pendingStore;
+    remoteStoreVersions.set(pendingStore, expectedEtag);
+    const serialized = JSON.stringify(pendingStore, null, 2);
+    remoteWriteQueue = remoteWriteQueue.catch(() => undefined).then(async () => {
+      try {
+        const result = await putBlob(BLOB_STATE_PATH, serialized, {
+          access: 'private',
+          addRandomSuffix: false,
+          allowOverwrite: true,
+          ...(expectedEtag ? { ifMatch: expectedEtag } : {}),
+          contentType: 'application/json'
+        });
+        remoteStoreEtag = result.etag;
+        remoteStoreVersions.set(pendingStore, result.etag);
+      } catch (error) {
+        if (error instanceof BlobPreconditionFailedError) {
+          remoteStoreCache = null;
+          remoteStoreEtag = null;
+          throw new Error('Server data changed during this save. Refresh and try again.');
+        }
+        throw error;
+      }
     });
     await remoteWriteQueue;
     return;
@@ -435,7 +478,90 @@ export function createExpressApp(): express.Express {
 
   // Health check endpoint
   app.get('/api/server/health', async (_req, res) => {
-    res.json({ status: 'ok', uptime: process.uptime(), time: new Date().toISOString() });
+    const storage = USE_BLOB_STORE ? 'vercel-blob' : process.env.VERCEL ? 'misconfigured' : 'local-disk';
+    res.status(storage === 'misconfigured' ? 503 : 200).json({
+      status: storage === 'misconfigured' ? 'error' : 'ok',
+      storage,
+      uptime: process.uptime(),
+      time: new Date().toISOString()
+    });
+  });
+
+  app.post('/api/media/upload-token', async (req, res) => {
+    if (!USE_BLOB_STORE) {
+      res.status(503).json({ ok: false, message: 'Private media uploads require Vercel Blob storage.' });
+      return;
+    }
+    try {
+      const result = await handleUpload({
+        request: req,
+        body: req.body,
+        onBeforeGenerateToken: async (pathname) => {
+          if (!pathname.startsWith('engagement-app/media/')) {
+            throw new Error('Invalid media upload path.');
+          }
+          return {
+            allowedContentTypes: ['image/*', 'video/*'],
+            maximumSizeInBytes: 35 * 1024 * 1024,
+            addRandomSuffix: true,
+            allowOverwrite: false
+          };
+        }
+      });
+      res.json(result);
+    } catch (error) {
+      res.status(400).json({ ok: false, message: error instanceof Error ? error.message : String(error) });
+    }
+  });
+
+  app.post('/api/media/upload-local', express.raw({ type: 'application/octet-stream', limit: '35mb' }), async (req, res) => {
+    if (process.env.VERCEL) {
+      res.status(404).json({ ok: false, message: 'Local media upload is unavailable in production.' });
+      return;
+    }
+    const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    if (body.length === 0) {
+      res.status(400).json({ ok: false, message: 'Media file is empty.' });
+      return;
+    }
+    const requestedName = String(req.query.filename || 'media.bin');
+    const safeName = requestedName.replace(/[^a-zA-Z0-9._-]+/g, '-').slice(-120) || 'media.bin';
+    const storedName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}-${safeName}`;
+    fs.mkdirSync(LOCAL_MEDIA_DIR, { recursive: true });
+    fs.writeFileSync(path.join(LOCAL_MEDIA_DIR, storedName), body);
+    const pathname = `engagement-app/media/${storedName}`;
+    res.json({ ok: true, pathname, mediaUrl: `/api/media/content?path=${encodeURIComponent(pathname)}` });
+  });
+
+  app.get('/api/media/content', async (req, res) => {
+    const pathname = String(req.query.path || '');
+    if (!pathname.startsWith('engagement-app/media/')) {
+      res.status(400).json({ ok: false, message: 'Invalid media path.' });
+      return;
+    }
+    try {
+      if (USE_BLOB_STORE) {
+        const result = await getBlob(pathname, { access: 'private' });
+        if (!result || result.statusCode !== 200) {
+          res.status(404).end();
+          return;
+        }
+        res.setHeader('Content-Type', result.blob.contentType || 'application/octet-stream');
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        const bytes = Buffer.from(await new Response(result.stream).arrayBuffer());
+        res.send(bytes);
+        return;
+      }
+      const localName = path.basename(pathname);
+      const localPath = path.join(LOCAL_MEDIA_DIR, localName);
+      if (!fs.existsSync(localPath)) {
+        res.status(404).end();
+        return;
+      }
+      res.sendFile(localPath);
+    } catch (error) {
+      res.status(500).json({ ok: false, message: error instanceof Error ? error.message : String(error) });
+    }
   });
 
   // REST API: Get full server state
@@ -1005,6 +1131,24 @@ export function createExpressApp(): express.Express {
     res.json({ ok: true, config: store.config, message: 'Configuration saved to server.' });
   });
 
+  app.post('/api/admin/sync-state', async (req, res) => {
+    const store = readStore();
+    const { syncHealth, syncLedger, syncLogs } = req.body || {};
+    if (syncHealth && typeof syncHealth === 'object') {
+      store.syncHealth = { ...store.syncHealth, ...syncHealth };
+    }
+    if (Array.isArray(syncLedger)) store.syncLedger = syncLedger;
+    if (Array.isArray(syncLogs)) store.syncLogs = syncLogs.slice(0, 200);
+    await writeStore(store);
+    res.json({
+      ok: true,
+      syncHealth: store.syncHealth,
+      syncLedger: store.syncLedger || [],
+      syncLogs: store.syncLogs || [],
+      message: 'Sync status saved to server.'
+    });
+  });
+
   // REST API: Add user
   app.post('/api/admin/users', async (req, res) => {
     const { email, name, role, site, shift } = req.body || {};
@@ -1242,17 +1386,20 @@ export function createExpressApp(): express.Express {
     const { id, decision, note, reviewedBy } = req.body || {};
     const store = readStore();
     const index = store.uploads.findIndex((u) => u.id === id);
-    if (index !== -1) {
-      store.uploads[index] = {
-        ...store.uploads[index],
-        reviewStatus: decision,
-        reviewNote: note || store.uploads[index].reviewNote,
-        reviewedBy: reviewedBy || store.uploads[index].reviewedBy,
-        reviewedAt: new Date().toISOString(),
-        topPick: decision === 'Top pick' ? true : store.uploads[index].topPick
-      };
-      await writeStore(store);
+    if (index === -1) {
+      res.status(404).json({ ok: false, message: 'Upload not found.' });
+      return;
     }
+    store.uploads[index] = {
+      ...store.uploads[index],
+      reviewStatus: decision,
+      reviewNote: note || store.uploads[index].reviewNote,
+      reviewedBy: reviewedBy || store.uploads[index].reviewedBy,
+      reviewedAt: new Date().toISOString(),
+      topPick: decision === 'Top pick' ? true : store.uploads[index].topPick
+    };
+    appendSyncLog(store, 'followups', 'Info', `${decision || 'Review'} saved for ${id} by ${reviewedBy || 'reviewer'}.`);
+    await writeStore(store);
     res.json({ ok: true, uploads: store.uploads });
   });
 
@@ -1261,17 +1408,19 @@ export function createExpressApp(): express.Express {
     const { id, usedInFinal, creativeApprovedBy, creativeApprovedAt } = req.body || {};
     const store = readStore();
     const index = store.uploads.findIndex((u) => u.id === id);
-    if (index !== -1) {
-      const current = store.uploads[index];
-      const targetUsed = typeof usedInFinal === 'boolean' ? usedInFinal : !current.usedInFinal;
-      store.uploads[index] = {
-        ...current,
-        usedInFinal: targetUsed,
-        creativeApprovedBy: targetUsed ? (creativeApprovedBy || current.creativeApprovedBy) : undefined,
-        creativeApprovedAt: targetUsed ? (creativeApprovedAt || new Date().toISOString()) : undefined
-      };
-      await writeStore(store);
+    if (index === -1) {
+      res.status(404).json({ ok: false, message: 'Upload not found.' });
+      return;
     }
+    const current = store.uploads[index];
+    const targetUsed = typeof usedInFinal === 'boolean' ? usedInFinal : !current.usedInFinal;
+    store.uploads[index] = {
+      ...current,
+      usedInFinal: targetUsed,
+      creativeApprovedBy: targetUsed ? (creativeApprovedBy || current.creativeApprovedBy) : undefined,
+      creativeApprovedAt: targetUsed ? (creativeApprovedAt || new Date().toISOString()) : undefined
+    };
+    await writeStore(store);
     res.json({ ok: true, uploads: store.uploads });
   });
 
@@ -1293,14 +1442,16 @@ export function createExpressApp(): express.Express {
     const { reportId } = req.body || {};
     const store = readStore();
     const index = store.shiftReports.findIndex((r) => r.reportId === reportId);
-    if (index !== -1) {
-      store.shiftReports[index] = {
-        ...store.shiftReports[index],
-        signedOff: true,
-        verified: true
-      };
-      await writeStore(store);
+    if (index === -1) {
+      res.status(404).json({ ok: false, message: 'Shift report not found.' });
+      return;
     }
+    store.shiftReports[index] = {
+      ...store.shiftReports[index],
+      signedOff: true,
+      verified: true
+    };
+    await writeStore(store);
     res.json({ ok: true, shiftReports: store.shiftReports });
   });
 
@@ -1318,6 +1469,7 @@ export function createExpressApp(): express.Express {
         acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
         reply: reply || store.directions[index].reply
       };
+      appendSyncLog(store, 'directions', 'OK', `${email || 'A user'} acknowledged task ${feedbackId}.`);
       await writeStore(store);
     } else if (direction && feedbackId) {
       const prevAck = direction.acknowledgedBy || [];
@@ -1328,6 +1480,7 @@ export function createExpressApp(): express.Express {
         acknowledgedBy: Array.from(new Set([...prevAck, email].filter(Boolean))),
         reply: reply || direction.reply || ''
       });
+      appendSyncLog(store, 'directions', 'OK', `${email || 'A user'} acknowledged task ${feedbackId}.`);
       await writeStore(store);
     } else if (feedbackId) {
       store.directions.unshift({
@@ -1345,6 +1498,7 @@ export function createExpressApp(): express.Express {
         sentAt: new Date().toISOString(),
         status: 'Published'
       } as any);
+      appendSyncLog(store, 'directions', 'OK', `${email || 'A user'} acknowledged task ${feedbackId}.`);
       await writeStore(store);
     }
     res.json({ ok: true, directions: store.directions });
@@ -1388,14 +1542,17 @@ export function createExpressApp(): express.Express {
     const { feedbackId } = req.body || {};
     const store = readStore();
     const index = store.directions.findIndex((d) => d.feedbackId === feedbackId);
-    if (index !== -1) {
-      store.directions[index] = {
-        ...store.directions[index],
-        status: 'Published',
-        sentAt: new Date().toISOString()
-      };
-      await writeStore(store);
+    if (index === -1) {
+      res.status(404).json({ ok: false, message: 'Direction not found.' });
+      return;
     }
+    store.directions[index] = {
+      ...store.directions[index],
+      status: 'Published',
+      sentAt: new Date().toISOString()
+    };
+    appendSyncLog(store, 'directions', 'OK', `Direction ${feedbackId} was published.`);
+    await writeStore(store);
     res.json({ ok: true, directions: store.directions });
   });
 
@@ -1412,6 +1569,17 @@ export function createExpressApp(): express.Express {
   app.post('/api/admin/reset-sample', async (_req, res) => {
     await writeStore(INITIAL_STORE);
     res.json({ ok: true, store: INITIAL_STORE, message: 'Server reset to initial state.' });
+  });
+
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const status = message.includes('changed during this save')
+      ? 409
+      : message.includes('Persistent storage is unavailable')
+        ? 503
+        : 500;
+    console.error('API request failed:', error);
+    res.status(status).json({ ok: false, message });
   });
 
   return app;

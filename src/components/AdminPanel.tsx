@@ -520,10 +520,10 @@ const RecordsSection: React.FC<{ show: (result: { ok: boolean; message: string }
   const [tab, setTab] = useState<RecordTab>('uploads');
   const [confirm, setConfirm] = useState<RecordTab | null>(null);
 
-  const wipe = () => {
-    if (confirm === 'uploads') show(app.deleteAllUploads());
-    if (confirm === 'directions') show(app.deleteAllDirections());
-    if (confirm === 'reports') show(app.deleteAllShiftReports());
+  const wipe = async () => {
+    if (confirm === 'uploads') show(await app.deleteAllUploads());
+    if (confirm === 'directions') show(await app.deleteAllDirections());
+    if (confirm === 'reports') show(await app.deleteAllShiftReports());
     setConfirm(null);
   };
 
@@ -609,7 +609,7 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         </div>
         <button
           type="button"
-          onClick={() => show(deleteUpload(item.id))}
+          onClick={async () => show(await deleteUpload(item.id))}
           className="text-[11px] font-semibold text-rose-600 cursor-pointer"
         >
           Delete
@@ -619,7 +619,7 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         <select
           value={item.site}
           aria-label={`Site for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { site: event.target.value }))}
+          onChange={async (event) => show(await updateUpload(item.id, { site: event.target.value }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           {!sites.some((site) => site.SiteName === item.site) && <option value={item.site}>{item.site}</option>}
@@ -632,7 +632,7 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         <select
           value={item.topic}
           aria-label={`Topic for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { topic: event.target.value }))}
+          onChange={async (event) => show(await updateUpload(item.id, { topic: event.target.value }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           {!topics.some((topic) => topic.Topic === item.topic) && <option value={item.topic}>{item.topic}</option>}
@@ -645,7 +645,7 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
         <select
           value={item.reviewStatus}
           aria-label={`Review status for ${item.id}`}
-          onChange={(event) => show(updateUpload(item.id, { reviewStatus: event.target.value as ReviewStatus }))}
+          onChange={async (event) => show(await updateUpload(item.id, { reviewStatus: event.target.value as ReviewStatus }))}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
           {REVIEW_STATUSES.map((status) => (
@@ -658,14 +658,14 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
       <input
         value={item.spot}
         aria-label={`Spot for ${item.id}`}
-        onChange={(event) => show(updateUpload(item.id, { spot: event.target.value }))}
+        onChange={async (event) => show(await updateUpload(item.id, { spot: event.target.value }))}
         className="glass-input rounded-xl px-3 py-2 text-xs w-full"
       />
       <label className="flex items-center gap-2 text-[11px] text-slate-600">
         <input
           type="checkbox"
           checked={item.topPick}
-          onChange={(event) => show(updateUpload(item.id, { topPick: event.target.checked }))}
+          onChange={async (event) => show(await updateUpload(item.id, { topPick: event.target.checked }))}
         />
         Top pick
       </label>
@@ -684,7 +684,7 @@ const UploadEditor: React.FC<{ item: UploadItem; show: (result: { ok: boolean; m
       />
       <button
         type="button"
-        onClick={() => show(updateUpload(item.id, { note, reviewNote }))}
+        onClick={async () => show(await updateUpload(item.id, { note, reviewNote }))}
         className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
       >
         Save notes
@@ -714,7 +714,7 @@ const DirectionEditor: React.FC<{
         </div>
         <button
           type="button"
-          onClick={() => show(deleteDirection(item.feedbackId))}
+          onClick={async () => show(await deleteDirection(item.feedbackId))}
           className="text-[11px] font-semibold text-rose-600 cursor-pointer"
         >
           Delete
@@ -736,8 +736,8 @@ const DirectionEditor: React.FC<{
         <select
           value={item.status}
           aria-label={`Status for ${item.feedbackId}`}
-          onChange={(event) =>
-            show(updateDirection(item.feedbackId, { status: event.target.value as DirectionMessage['status'] }))
+          onChange={async (event) =>
+            show(await updateDirection(item.feedbackId, { status: event.target.value as DirectionMessage['status'] }))
           }
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
@@ -747,10 +747,10 @@ const DirectionEditor: React.FC<{
         <select
           value={item.toAll && (!item.toSite || item.toSite.toLowerCase().includes('all')) ? 'All Sites' : (item.toSite || 'All Sites')}
           aria-label={`Target site for ${item.feedbackId}`}
-          onChange={(event) => {
+          onChange={async (event) => {
             const val = event.target.value;
             const isAll = val === 'All Sites';
-            show(updateDirection(item.feedbackId, { toSite: val, toAll: isAll }));
+            show(await updateDirection(item.feedbackId, { toSite: val, toAll: isAll }));
           }}
           className="glass-input rounded-xl px-3 py-2 text-xs"
         >
@@ -765,13 +765,13 @@ const DirectionEditor: React.FC<{
           <input
             type="checkbox"
             checked={item.acknowledged}
-            onChange={(event) => show(updateDirection(item.feedbackId, { acknowledged: event.target.checked }))}
+            onChange={async (event) => show(await updateDirection(item.feedbackId, { acknowledged: event.target.checked }))}
           />
           Acknowledged
         </label>
         <button
           type="button"
-          onClick={() => show(updateDirection(item.feedbackId, { title, message }))}
+          onClick={async () => show(await updateDirection(item.feedbackId, { title, message }))}
           className="px-3 py-1.5 rounded-xl text-xs font-semibold bg-slate-900 text-white cursor-pointer"
         >
           Save text
@@ -801,7 +801,7 @@ const ReportEditor: React.FC<{
         </div>
         <button
           type="button"
-          onClick={() => show(deleteShiftReport(item.reportId))}
+          onClick={async () => show(await deleteShiftReport(item.reportId))}
           className="text-[11px] font-semibold text-rose-600 cursor-pointer"
         >
           Delete
@@ -833,7 +833,7 @@ const ReportEditor: React.FC<{
           <input
             type="checkbox"
             checked={item.signedOff}
-            onChange={(event) => show(updateShiftReport(item.reportId, { signedOff: event.target.checked }))}
+            onChange={async (event) => show(await updateShiftReport(item.reportId, { signedOff: event.target.checked }))}
           />
           Signed off
         </label>
@@ -841,15 +841,15 @@ const ReportEditor: React.FC<{
           <input
             type="checkbox"
             checked={item.verified}
-            onChange={(event) => show(updateShiftReport(item.reportId, { verified: event.target.checked }))}
+            onChange={async (event) => show(await updateShiftReport(item.reportId, { verified: event.target.checked }))}
           />
           Verified
         </label>
         <button
           type="button"
-          onClick={() =>
+          onClick={async () =>
             show(
-              updateShiftReport(item.reportId, {
+              await updateShiftReport(item.reportId, {
                 engagementDone: done,
                 notes,
                 hoursWorked: Number(hours) || 0
@@ -930,9 +930,14 @@ const ConfigSection: React.FC<{ show: (result: { ok: boolean; message: string })
         <button
           type="button"
           disabled={tokenBusy}
-          onClick={() => {
+          onClick={async () => {
             setTokenBusy(true);
-            setClickUpToken(token.trim());
+            const saved = await setClickUpToken(token.trim());
+            if (!saved.ok) {
+              show(saved);
+              setTokenBusy(false);
+              return;
+            }
             void testClickUpToken(token.trim()).then((result) => {
               show({ ok: result.success, message: result.message });
               setTokenBusy(false);
@@ -1001,14 +1006,14 @@ const SyncSection: React.FC<{ show: (result: { ok: boolean; message: string }) =
           </div>
           <button
             type="button"
-            onClick={toggleSyncPause}
+            onClick={async () => show(await toggleSyncPause())}
             className="px-3 py-1.5 rounded-xl text-xs font-semibold border border-slate-200 bg-white cursor-pointer"
           >
             {syncHealth.paused ? 'Resume sync flag' : 'Pause sync flag'}
           </button>
         </div>
         <p className="text-[11px] text-slate-500">
-          The pause flag is stored locally. Connectors are still read-only, so pause does not stop a remote job. Running sync only fetches.
+          The pause flag is stored on the server. Connectors are read-only, so running sync only fetches.
         </p>
         {!googleToken && (
           <div className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-[11px] text-amber-900 space-y-2">

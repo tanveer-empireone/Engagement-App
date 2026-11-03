@@ -69,14 +69,14 @@ export const ShiftReportsView: React.FC = () => {
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!engagementDone.trim()) {
       alert('Please summarize engagement completed during the shift.');
       return;
     }
 
-    addShiftReport({
+    const result = await addShiftReport({
       officer: currentUser.Email,
       officerName: currentUser.Name,
       site,
@@ -93,9 +93,13 @@ export const ShiftReportsView: React.FC = () => {
       signedOff: false
     });
 
-    setIsModalOpen(false);
-    setEngagementDone('');
-    setNotes('');
+    if (result.ok) {
+      setIsModalOpen(false);
+      setEngagementDone('');
+      setNotes('');
+    } else {
+      alert(result.message);
+    }
   };
 
   return (
@@ -178,7 +182,10 @@ export const ShiftReportsView: React.FC = () => {
 
                 {canReview && !report.signedOff && (
                   <button
-                    onClick={() => signOffReport(report.reportId)}
+                    onClick={async () => {
+                      const result = await signOffReport(report.reportId);
+                      if (!result.ok) alert(result.message);
+                    }}
                     className="text-xs font-semibold text-emerald-700 hover:text-emerald-900 bg-emerald-50 px-2.5 py-1 rounded-xl transition cursor-pointer"
                   >
                     Sign Off
