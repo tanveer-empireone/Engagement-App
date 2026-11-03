@@ -25,7 +25,8 @@ const QUICK_TOPICS = [
   { label: 'Recognition', value: 'Employee Recognition' },
   { label: 'Huddle', value: 'Team Huddle & Brief' },
   { label: 'Games & Morale', value: 'Floor Engagement & Games' },
-  { label: 'Culture & Event', value: 'Town Hall & Culture' }
+  { label: 'Culture & Event', value: 'Town Hall & Culture' },
+  { label: 'Other', value: 'Other' }
 ];
 
 export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onNavigateToLibrary }) => {
@@ -336,7 +337,7 @@ export const CaptureView: React.FC<{ onNavigateToLibrary: () => void }> = ({ onN
         {/* Optional Note (kept super simple) */}
         <input
           type="text"
-          placeholder="Add short note (optional)..."
+          placeholder={topic === 'Other' ? 'Add topic description or note (optional)...' : 'Add short note (optional)...'}
           value={note}
           onChange={(e) => setNote(e.target.value)}
           className="glass-input w-full text-xs px-3 py-2 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-hidden mt-2"

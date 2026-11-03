@@ -7,7 +7,8 @@ import {
   buildE1FileName,
   buildFolderPath,
   calculateTopPickRoom,
-  reverseGeocodeApprox
+  reverseGeocodeApprox,
+  TOPICS_LIST
 } from './idGenerator';
 
 test('formatYmd and formatYmdClean format dates properly', () => {
@@ -104,4 +105,15 @@ test('reverseGeocodeApprox creates valid Google Maps link and identifies site pr
   const geo = reverseGeocodeApprox(cebuCoords.lat, cebuCoords.lng);
   assert.ok(geo.mapLink.includes('https://www.google.com/maps?q=10.315700,123.885400'));
   assert.ok(geo.placeName.includes('Cebu City'));
+});
+
+test('TOPICS_LIST includes Other topic with OTH code', () => {
+  const otherTopic = TOPICS_LIST.find((t) => t.Topic === 'Other');
+  assert.ok(otherTopic, 'Other topic should exist in TOPICS_LIST');
+  assert.equal(otherTopic.Code, 'OTH');
+
+  // Verify prefix and upload ID generation with OTH
+  const prefix = `CEB_20261103_${otherTopic.Code}_`;
+  const uploadId = generateUploadId(prefix, []);
+  assert.equal(uploadId, 'CEB_20261103_OTH_01');
 });

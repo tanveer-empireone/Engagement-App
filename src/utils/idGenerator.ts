@@ -20,7 +20,8 @@ export const TOPICS_LIST = [
   { Topic: 'Town Hall & Culture', Code: 'TWN', Description: 'Executive updates, all-hands gatherings, culture pillars' },
   { Topic: 'Contests & Raffles', Code: 'CON', Description: 'Site-wide competitions, themed raffles, milestone drawings' },
   { Topic: 'Holiday & Celebration', Code: 'CEL', Description: 'Birthdays, festive themes, holidays, cultural celebrations' },
-  { Topic: 'General / Other', Code: 'GEN', Description: 'Day-to-day team moments, training sessions, camaraderie' }
+  { Topic: 'General / Other', Code: 'GEN', Description: 'Day-to-day team moments, training sessions, camaraderie' },
+  { Topic: 'Other', Code: 'OTH', Description: 'Other activities, special floor events, or custom engagements' }
 ];
 
 export const SPOTS_LIST = [
