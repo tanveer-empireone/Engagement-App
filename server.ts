@@ -220,10 +220,45 @@ export async function createGoogleDriveReaderPermission(
   });
   const data: any = await response.json().catch(() => ({}));
   if (!response.ok || !data?.id) {
+    const listUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`);
+    listUrl.searchParams.set('supportsAllDrives', 'true');
+    listUrl.searchParams.set('fields', 'permissions(id,emailAddress,type,role)');
+    const existingResponse = await fetch(listUrl, {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+    });
+    const existingData: any = await existingResponse.json().catch(() => ({}));
+    const existing = Array.isArray(existingData?.permissions)
+      ? existingData.permissions.find(
+          (permission: any) => permission?.type === 'user' && normalizeEmail(permission?.emailAddress) === normalizeEmail(email)
+        )
+      : undefined;
+    if (existing?.id) {
+      return { email: normalizeEmail(existing.emailAddress || email), permissionId: String(existing.id) };
+    }
     const message = data?.error?.message || `Google Drive rejected the permission request (HTTP ${response.status}).`;
     throw new Error(`${email}: ${message}`);
   }
   return { email: normalizeEmail(data.emailAddress || email), permissionId: String(data.id) };
+}
+
+export async function markGoogleDriveItemForApp(token: string, fileId: string, rootFolderId: string): Promise<void> {
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`);
+  url.searchParams.set('supportsAllDrives', 'true');
+  url.searchParams.set('fields', 'id,properties');
+  const response = await fetch(url, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({ properties: { engagementAppRootId: rootFolderId } })
+  });
+  if (!response.ok) {
+    const data: any = await response.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Google Drive could not mark the shared item (HTTP ${response.status}).`);
+  }
 }
 
 export async function deleteGoogleDrivePermission(token: string, fileId: string, permissionId: string): Promise<void> {
@@ -611,7 +646,7 @@ export function createExpressApp(): express.Express {
       // A user can read a shared child without being allowed to browse its parent.
       const folderQuery = `'${rootId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
       const sharedFolderQuery = `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-      const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
+      const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents,properties)';
       const [folderRes, sharedFolderRes] = await Promise.all([
         fetch(
           `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`,
@@ -627,7 +662,7 @@ export function createExpressApp(): express.Express {
       const folders: any[] = mergeDriveRootChildren(rootId, folderData.files || [], sharedFolderData.files || []);
 
       // 3. For each folder, fetch its image files (in parallel, up to 10 folders)
-      const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
+      const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents,properties)';
       const foldersWithImages = await Promise.all(
         folders.map(async (folder) => {
           try {
@@ -674,13 +709,22 @@ export function createExpressApp(): express.Express {
       let rootImages: any[] = [];
       try {
         const rootImgQuery = `'${rootId}' in parents and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
-        const rootImgRes = await fetch(
-          `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(rootImgQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=50&orderBy=createdTime desc`,
-          { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
-        );
+        const sharedMediaQuery = `sharedWithMe = true and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+        const [rootImgRes, sharedMediaRes] = await Promise.all([
+          fetch(
+            `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(rootImgQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=50&orderBy=createdTime desc`,
+            { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+          ),
+          fetch(
+            `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(sharedMediaQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=100&orderBy=createdTime desc`,
+            { method: 'GET', headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' } }
+          )
+        ]);
         if (rootImgRes.ok) {
           const rData = await rootImgRes.json();
-          rootImages = (rData.files || []).map((f: any) => ({
+          const sharedMediaData = sharedMediaRes.ok ? await sharedMediaRes.json() : { files: [] };
+          const discoveredImages = mergeDriveRootChildren(rootId, rData.files || [], sharedMediaData.files || []);
+          rootImages = discoveredImages.map((f: any) => ({
             id: f.id,
             name: f.name,
             mimeType: f.mimeType,
@@ -756,6 +800,8 @@ export function createExpressApp(): express.Express {
       );
 
       if (exists) {
+        const googleTargetId = targetType === 'all' ? store.config.driveRootId : String(targetId);
+        await markGoogleDriveItemForApp(token, googleTargetId, store.config.driveRootId);
         res.json({ ok: true, permissions: store.drivePermissions, message: 'Permission already granted.' });
         return;
       }
@@ -767,6 +813,7 @@ export function createExpressApp(): express.Express {
       }
 
       const googleTargetId = targetType === 'all' ? store.config.driveRootId : String(targetId);
+      await markGoogleDriveItemForApp(token, googleTargetId, store.config.driveRootId);
       const results = await Promise.allSettled(
         grantEmails.map((email) => createGoogleDriveReaderPermission(token, googleTargetId, email))
       );

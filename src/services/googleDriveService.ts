@@ -250,7 +250,7 @@ export async function fetchDriveTreeWithImages(
   // Direct client fetch fallback
   const folderQuery = `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
   const sharedFolderQuery = `sharedWithMe = true and mimeType = 'application/vnd.google-apps.folder' and trashed = false`;
-  const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents)';
+  const folderFields = 'files(id,name,mimeType,createdTime,modifiedTime,webViewLink,parents,properties)';
   const folderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(folderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`;
   const sharedFolderUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(sharedFolderQuery)}&fields=${encodeURIComponent(folderFields)}&pageSize=100&orderBy=name`;
 
@@ -278,7 +278,7 @@ export async function fetchDriveTreeWithImages(
     sharedFolderData.files || []
   );
 
-  const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents)';
+  const imageFields = 'files(id,name,mimeType,size,createdTime,modifiedTime,thumbnailLink,webViewLink,webContentLink,iconLink,parents,properties)';
   const foldersWithImages: FolderWithImages[] = await Promise.all(
     rawFolders.map(async (folder) => {
       try {
@@ -322,13 +322,33 @@ export async function fetchDriveTreeWithImages(
     })
   );
 
+  const sharedMediaQuery = `sharedWithMe = true and (mimeType contains 'image/' or mimeType contains 'video/') and trashed = false`;
+  const sharedMediaUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(sharedMediaQuery)}&fields=${encodeURIComponent(imageFields)}&pageSize=100&orderBy=createdTime desc`;
+  const sharedMediaRes = await fetch(sharedMediaUrl, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' }
+  });
+  const sharedMediaData = sharedMediaRes.ok ? await sharedMediaRes.json() : { files: [] };
+  const rootImages = mergeDriveRootChildren(rootFolderId, [], sharedMediaData.files || []).map((f: any) => ({
+    id: f.id,
+    name: f.name,
+    mimeType: f.mimeType,
+    size: f.size ? Number(f.size) : undefined,
+    createdTime: f.createdTime,
+    modifiedTime: f.modifiedTime,
+    thumbnailLink: f.thumbnailLink ? f.thumbnailLink.replace(/=s\d+$/, '=s800') : `https://drive.google.com/thumbnail?id=${f.id}&sz=w800`,
+    webViewLink: f.webViewLink,
+    webContentLink: f.webContentLink,
+    folderId: rootFolderId,
+    folderName: 'Shared media'
+  }));
+
   return {
     rootFolder: { id: rootFolderId, name: 'E1CX Experience' },
     foldersWithImages,
-    rootImages: [],
+    rootImages,
     totalFolders: foldersWithImages.length,
-    totalImages: foldersWithImages.reduce((sum, f) => sum + f.images.length, 0),
+    totalImages: foldersWithImages.reduce((sum, f) => sum + f.images.length, 0) + rootImages.length,
     fetchedAt: new Date().toISOString()
   };
 }
-

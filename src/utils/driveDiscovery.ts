@@ -1,6 +1,7 @@
 export interface DriveDiscoveryItem {
   id: string;
   parents?: string[];
+  properties?: Record<string, string>;
   [key: string]: unknown;
 }
 
@@ -12,7 +13,9 @@ export function mergeDriveRootChildren<T extends DriveDiscoveryItem>(
 ): T[] {
   const byId = new Map(directChildren.map((item) => [item.id, item]));
   for (const item of sharedItems) {
-    if (item.parents?.includes(rootFolderId) && !byId.has(item.id)) {
+    const belongsToAppRoot =
+      item.parents?.includes(rootFolderId) || item.properties?.engagementAppRootId === rootFolderId;
+    if (belongsToAppRoot && !byId.has(item.id)) {
       byId.set(item.id, item);
     }
   }

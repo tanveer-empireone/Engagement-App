@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
-import { createGoogleDriveReaderPermission, deleteGoogleDrivePermission } from '../server.ts';
+import { createGoogleDriveReaderPermission, deleteGoogleDrivePermission, markGoogleDriveItemForApp } from '../server.ts';
 import { mergeDriveRootChildren } from './utils/driveDiscovery.ts';
 
 test('directly shared folders are discovered only inside the configured Drive root', () => {
@@ -11,12 +11,13 @@ test('directly shared folders are discovered only inside the configured Drive ro
     [{ id: 'direct', parents: ['app-root'], name: 'Direct' }],
     [
       { id: 'shared-child', parents: ['app-root'], name: 'Shared child' },
+      { id: 'marked-child', properties: { engagementAppRootId: 'app-root' }, name: 'Marked child' },
       { id: 'other-drive', parents: ['another-root'], name: 'Unrelated' },
       { id: 'direct', parents: ['app-root'], name: 'Duplicate' }
     ]
   );
 
-  assert.deepEqual(result.map((item) => item.id), ['direct', 'shared-child']);
+  assert.deepEqual(result.map((item) => item.id), ['direct', 'shared-child', 'marked-child']);
   assert.equal(result[0].name, 'Direct');
 });
 
@@ -43,6 +44,13 @@ test('Google Drive permission helpers call the real permissions API', async () =
     await deleteGoogleDrivePermission('oauth-token', 'folder/id', 'permission/id');
     assert.match(calls[1].url, /permissions\/permission%2Fid/);
     assert.equal(calls[1].init?.method, 'DELETE');
+
+    await markGoogleDriveItemForApp('oauth-token', 'folder/id', 'app-root');
+    assert.match(calls[2].url, /files\/folder%2Fid/);
+    assert.equal(calls[2].init?.method, 'PATCH');
+    assert.deepEqual(JSON.parse(String(calls[2].init?.body)), {
+      properties: { engagementAppRootId: 'app-root' }
+    });
   } finally {
     globalThis.fetch = originalFetch;
   }
