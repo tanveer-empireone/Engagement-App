@@ -42,8 +42,7 @@ export const LibraryView: React.FC = () => {
     googleToken,
     drivePermissions,
     grantDrivePermission,
-    revokeDrivePermission,
-    canUserAccessDriveItem
+    revokeDrivePermission
   } = useSignedInApp();
 
   // Google Drive Explorer state
@@ -159,28 +158,16 @@ export const LibraryView: React.FC = () => {
     }));
   };
 
-  // Filter Google Drive folders and files:
-  // - Admins see everything.
-  // - Non-admins only see folders/files where canUserAccessDriveItem is true.
+  // Google Drive already limits this tree to items the signed-in account can read.
   const accessibleFoldersWithImages = useMemo(() => {
     if (!driveTree) return [];
 
     const query = driveSearch.trim().toLowerCase();
 
     return driveTree.foldersWithImages
-      .filter(({ folder }) => {
-        // Permission check
-        if (!isAdmin && !canUserAccessDriveItem('folder', folder.id)) {
-          return false;
-        }
-        return true;
-      })
       .map(({ folder, images }) => {
         // Filter images inside folder
         const visibleImages = images.filter((img) => {
-          if (!isAdmin && !canUserAccessDriveItem('file', img.id, folder.id)) {
-            return false;
-          }
           if (query && !img.name.toLowerCase().includes(query) && !folder.name.toLowerCase().includes(query)) {
             return false;
           }
@@ -196,17 +183,16 @@ export const LibraryView: React.FC = () => {
         if (!query) return true;
         return folder.name.toLowerCase().includes(query) || images.length > 0;
       });
-  }, [driveTree, driveSearch, isAdmin, canUserAccessDriveItem]);
+  }, [driveTree, driveSearch]);
 
   const accessibleRootImages = useMemo(() => {
     if (!driveTree) return [];
     const query = driveSearch.trim().toLowerCase();
     return (driveTree.rootImages || []).filter((img) => {
-      if (!isAdmin && !canUserAccessDriveItem('file', img.id)) return false;
       if (query && !img.name.toLowerCase().includes(query)) return false;
       return true;
     });
-  }, [driveTree, driveSearch, isAdmin, canUserAccessDriveItem]);
+  }, [driveTree, driveSearch]);
 
   const totalAccessibleImages = useMemo(() => {
     return (
@@ -1048,5 +1034,4 @@ const DriveMediaCard: React.FC<{
     </div>
   );
 };
-
 

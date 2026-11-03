@@ -2,6 +2,35 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
+import { createGoogleDriveReaderPermission, deleteGoogleDrivePermission } from '../server.ts';
+
+test('Google Drive permission helpers call the real permissions API', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), init });
+    if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+    return Response.json({ id: 'permission-123', emailAddress: 'USER@EXAMPLE.COM' });
+  }) as typeof fetch;
+
+  try {
+    const created = await createGoogleDriveReaderPermission('oauth-token', 'folder/id', 'user@example.com');
+    assert.deepEqual(created, { email: 'user@example.com', permissionId: 'permission-123' });
+    assert.match(calls[0].url, /files\/folder%2Fid\/permissions/);
+    assert.equal(new Headers(calls[0].init?.headers).get('authorization'), 'Bearer oauth-token');
+    assert.deepEqual(JSON.parse(String(calls[0].init?.body)), {
+      type: 'user',
+      role: 'reader',
+      emailAddress: 'user@example.com'
+    });
+
+    await deleteGoogleDrivePermission('oauth-token', 'folder/id', 'permission/id');
+    assert.match(calls[1].url, /permissions\/permission%2Fid/);
+    assert.equal(calls[1].init?.method, 'DELETE');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test('server data persistence store maintains integrity', () => {
   const testDir = path.resolve(process.cwd(), 'data');

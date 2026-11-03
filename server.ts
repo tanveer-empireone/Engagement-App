@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -7,7 +6,6 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const PORT = 3000;
 const DATA_DIR = process.env.VERCEL ? path.join('/tmp', 'data') : path.resolve(__dirname, 'data');
 const DATA_FILE = path.join(DATA_DIR, 'server-state.json');
 
@@ -41,6 +39,7 @@ export interface DrivePermissionGrant {
   granteeName?: string;
   grantedBy: string;
   grantedAt: string;
+  googlePermissions?: Array<{ email: string; permissionId: string }>;
 }
 
 export interface ServerStore {
@@ -176,6 +175,69 @@ const INITIAL_STORE: ServerStore = {
 
 function normalizeEmail(email: string | null | undefined): string {
   return (email || '').trim().toLowerCase();
+}
+
+function getBearerToken(authorization: string | undefined): string {
+  const match = authorization?.match(/^Bearer\s+(.+)$/i);
+  return match?.[1]?.trim() || '';
+}
+
+function getGrantEmails(store: ServerStore, granteeType: string, granteeValue: string): string[] {
+  const value = String(granteeValue || '').trim();
+  if (granteeType === 'user') return value.includes('@') ? [normalizeEmail(value)] : [];
+
+  const normalizedValue = value.toLowerCase();
+  return store.people
+    .filter((person) => {
+      if (!person.Active || !person.Email?.includes('@')) return false;
+      if (granteeType === 'role') return String(person.Role).toLowerCase() === normalizedValue;
+      if (granteeType === 'site') return String(person.Site).toLowerCase() === normalizedValue;
+      return false;
+    })
+    .map((person) => normalizeEmail(person.Email))
+    .filter((email, index, emails) => email && emails.indexOf(email) === index);
+}
+
+export async function createGoogleDriveReaderPermission(
+  token: string,
+  fileId: string,
+  email: string
+): Promise<{ email: string; permissionId: string }> {
+  const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions`);
+  url.searchParams.set('sendNotificationEmail', 'true');
+  url.searchParams.set('supportsAllDrives', 'true');
+  url.searchParams.set('fields', 'id,emailAddress');
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({ type: 'user', role: 'reader', emailAddress: email })
+  });
+  const data: any = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.id) {
+    const message = data?.error?.message || `Google Drive rejected the permission request (HTTP ${response.status}).`;
+    throw new Error(`${email}: ${message}`);
+  }
+  return { email: normalizeEmail(data.emailAddress || email), permissionId: String(data.id) };
+}
+
+export async function deleteGoogleDrivePermission(token: string, fileId: string, permissionId: string): Promise<void> {
+  const url = new URL(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}/permissions/${encodeURIComponent(permissionId)}`
+  );
+  url.searchParams.set('supportsAllDrives', 'true');
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' }
+  });
+  if (!response.ok && response.status !== 404) {
+    const data: any = await response.json().catch(() => ({}));
+    throw new Error(data?.error?.message || `Google Drive rejected the revoke request (HTTP ${response.status}).`);
+  }
 }
 
 function isLegacyDummyUpload(u: any): boolean {
@@ -653,11 +715,17 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Grant Drive permission (Admin only)
-  app.post('/api/drive/permissions', (req, res) => {
+  app.post('/api/drive/permissions', async (req, res) => {
     try {
       const { targetType, targetId, targetName, granteeType, granteeValue, granteeName, grantedBy } = req.body || {};
       if (!targetType || !targetId || !granteeType || !granteeValue) {
         res.status(400).json({ ok: false, message: 'Missing targetType, targetId, granteeType, or granteeValue' });
+        return;
+      }
+
+      const token = getBearerToken(req.headers.authorization);
+      if (!token) {
+        res.status(401).json({ ok: false, message: 'Reconnect Google Drive, then try granting access again.' });
         return;
       }
 
@@ -670,6 +738,7 @@ export function createExpressApp(): express.Express {
       const cleanGrantee = String(granteeValue || '').trim().toLowerCase();
       const exists = store.drivePermissions.some(
         (p) =>
+          Boolean(p.googlePermissions?.length) &&
           p.targetType === targetType &&
           String(p.targetId) === String(targetId) &&
           p.granteeType === granteeType &&
@@ -681,6 +750,27 @@ export function createExpressApp(): express.Express {
         return;
       }
 
+      const grantEmails = getGrantEmails(store, granteeType, granteeValue);
+      if (grantEmails.length === 0) {
+        res.status(400).json({ ok: false, message: 'No active Google Workspace users match this permission.' });
+        return;
+      }
+
+      const googleTargetId = targetType === 'all' ? store.config.driveRootId : String(targetId);
+      const results = await Promise.allSettled(
+        grantEmails.map((email) => createGoogleDriveReaderPermission(token, googleTargetId, email))
+      );
+      const failures = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => (result.reason instanceof Error ? result.reason.message : String(result.reason)));
+      if (failures.length > 0) {
+        res.status(502).json({ ok: false, message: `Google Drive could not grant access: ${failures.join('; ')}` });
+        return;
+      }
+      const googlePermissions = results
+        .filter((result): result is PromiseFulfilledResult<{ email: string; permissionId: string }> => result.status === 'fulfilled')
+        .map((result) => result.value);
+
       const newGrant: DrivePermissionGrant = {
         id: `perm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
         targetType,
@@ -690,7 +780,8 @@ export function createExpressApp(): express.Express {
         granteeValue: String(granteeValue).trim(),
         granteeName: granteeName ? String(granteeName).trim() : undefined,
         grantedBy: grantedBy ? String(grantedBy).trim() : ADMIN_EMAIL,
-        grantedAt: new Date().toISOString()
+        grantedAt: new Date().toISOString(),
+        googlePermissions
       };
 
       store.drivePermissions.unshift(newGrant);
@@ -703,12 +794,26 @@ export function createExpressApp(): express.Express {
   });
 
   // REST API: Revoke Drive permission
-  app.delete('/api/drive/permissions/:id', (req, res) => {
+  app.delete('/api/drive/permissions/:id', async (req, res) => {
     try {
       const { id } = req.params;
       const store = readStore();
       if (!Array.isArray(store.drivePermissions)) {
         store.drivePermissions = [];
+      }
+      const existing = store.drivePermissions.find((permission) => permission?.id === id);
+      if (existing?.googlePermissions?.length) {
+        const token = getBearerToken(req.headers.authorization);
+        if (!token) {
+          res.status(401).json({ ok: false, message: 'Reconnect Google Drive, then try revoking access again.' });
+          return;
+        }
+        const googleTargetId = existing.targetType === 'all' ? store.config.driveRootId : existing.targetId;
+        await Promise.all(
+          existing.googlePermissions.map((permission) =>
+            deleteGoogleDrivePermission(token, googleTargetId, permission.permissionId)
+          )
+        );
       }
       const initialLen = store.drivePermissions.length;
       store.drivePermissions = store.drivePermissions.filter((p) => p && p.id !== id);
@@ -1215,34 +1320,4 @@ export function createExpressApp(): express.Express {
   });
 
   return app;
-}
-
-export async function startServer() {
-  const app = createExpressApp();
-
-  // Mount Vite or serve static files
-  if (process.env.NODE_ENV === 'production') {
-    app.use(express.static(path.resolve(__dirname, 'dist')));
-    app.get('*', (_req, res) => {
-      res.sendFile(path.resolve(__dirname, 'dist', 'index.html'));
-    });
-  } else {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: 'spa'
-    });
-    app.use(vite.middlewares);
-  }
-
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`E1 Server listening on port ${PORT}`);
-  });
-  return app;
-}
-
-if (!process.env.VERCEL && !process.env.IS_SERVERLESS) {
-  startServer().catch((err) => {
-    console.error('Failed to start server:', err);
-    process.exit(1);
-  });
 }

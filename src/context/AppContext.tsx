@@ -1472,24 +1472,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     granteeValue: string;
     granteeName?: string;
   }): Promise<ActionResult> => {
-    // Optimistic grant for client resilience
-    const tempId = `perm_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-    const optimisticGrant: DrivePermissionGrant = {
-      id: tempId,
-      targetType: grant.targetType,
-      targetId: String(grant.targetId),
-      targetName: String(grant.targetName || grant.targetId),
-      granteeType: grant.granteeType,
-      granteeValue: String(grant.granteeValue).trim(),
-      granteeName: grant.granteeName ? String(grant.granteeName).trim() : undefined,
-      grantedBy: currentUser?.Email || 'tanveer@empireonecx.com',
-      grantedAt: new Date().toISOString()
-    };
-
     try {
+      const token = googleToken || (await getAccessToken());
+      if (!token) return { ok: false, message: 'Reconnect Google Drive, then try granting access again.' };
       const res = await fetch('/api/drive/permissions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({
           ...grant,
           grantedBy: currentUser?.Email || 'tanveer@empireonecx.com'
@@ -1507,15 +1495,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         return { ok: false, message: data?.message || 'Failed to grant permission.' };
       }
 
-      // If server returned text (e.g. gateway notice), gracefully keep optimistic grant active
-      setDrivePermissions((prev) => [optimisticGrant, ...prev.filter((p) => p.id !== optimisticGrant.id)]);
-      window.dispatchEvent(new Event('app-settings-saved'));
-      return { ok: true, message: `Access granted for ${optimisticGrant.granteeName || optimisticGrant.granteeValue}.` };
+      return { ok: false, message: `Drive permission request failed (HTTP ${res.status}).` };
     } catch (err: unknown) {
-      console.warn('Network issue in grantDrivePermission, using optimistic grant:', err);
-      setDrivePermissions((prev) => [optimisticGrant, ...prev.filter((p) => p.id !== optimisticGrant.id)]);
-      window.dispatchEvent(new Event('app-settings-saved'));
-      return { ok: true, message: `Access granted for ${optimisticGrant.granteeName || optimisticGrant.granteeValue}.` };
+      console.error('Failed to grant Google Drive permission:', err);
+      return { ok: false, message: err instanceof Error ? err.message : 'Failed to grant Google Drive permission.' };
     }
   };
 
@@ -1525,9 +1508,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     window.dispatchEvent(new Event('app-settings-saved'));
 
     try {
+      const token = googleToken || (await getAccessToken());
+      if (!token) return { ok: false, message: 'Reconnect Google Drive, then try revoking access again.' };
       const res = await fetch(`/api/drive/permissions/${encodeURIComponent(id)}`, {
         method: 'DELETE',
-        headers: { Accept: 'application/json' }
+        headers: { Accept: 'application/json', Authorization: `Bearer ${token}` }
       });
       const contentType = res.headers.get('content-type') || '';
       if (contentType.includes('application/json')) {
@@ -1537,10 +1522,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           return { ok: true, message: data.message || 'Permission revoked.' };
         }
       }
-      return { ok: true, message: 'Permission revoked.' };
+      return { ok: false, message: `Drive permission revoke failed (HTTP ${res.status}).` };
     } catch (err: unknown) {
-      console.warn('Network issue in revokeDrivePermission:', err);
-      return { ok: true, message: 'Permission revoked.' };
+      console.error('Failed to revoke Google Drive permission:', err);
+      return { ok: false, message: err instanceof Error ? err.message : 'Failed to revoke Google Drive permission.' };
     }
   };
 

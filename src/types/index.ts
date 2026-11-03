@@ -191,5 +191,5 @@ export interface DrivePermissionGrant {
   granteeName?: string;
   grantedBy: string;
   grantedAt: string;
+  googlePermissions?: Array<{ email: string; permissionId: string }>;
 }
-
